@@ -1,5 +1,5 @@
 # ╔════════════════════════════════════════════════════════════════╗
-# ║  🚀 Android APK Smart Builder                                 ║
+# ║  🚀 Android APK Smart Builder  v2.0 (Fixed)                   ║
 # ║  بديل ذكي وقوي لـ Android Studio على GitHub Actions           ║
 # ║                                                                ║
 # ║  ✅ يدعم Java + Kotlin                                        ║
@@ -9,6 +9,7 @@
 # ║  ✅ يدعم NDK + CMake                                          ║
 # ║  ✅ يدعم Groovy DSL و Kotlin DSL                              ║
 # ║  ✅ يدعم Version Catalogs (libs.versions.toml)                ║
+# ║  ✅ يدعم مشاريع Android IDE / Sketchware                      ║
 # ╚════════════════════════════════════════════════════════════════╝
 
 name: 🚀 Android APK Builder
@@ -74,20 +75,19 @@ jobs:
         id: extract
         run: |
           set -eo pipefail
-          
+
           echo "╔══════════════════════════════════════════╗"
           echo "║  📦 Smart ZIP Detection & Extraction     ║"
           echo "╚══════════════════════════════════════════╝"
           echo ""
-          
+
           # ── البحث عن ملفات ZIP ──
           mapfile -t ZIP_FILES < <(find . -maxdepth 1 -name "*.zip" -type f 2>/dev/null | sort)
-          
+
           if [ ${#ZIP_FILES[@]} -eq 0 ]; then
             echo "📂 لا يوجد ملف ZIP - سيتم استخدام ملفات المشروع مباشرة"
             echo "has_zip=false" >> "$GITHUB_OUTPUT"
-            
-            # التحقق من وجود مشروع Android
+
             if find . -maxdepth 1 \( -name "settings.gradle*" -o -name "build.gradle*" \) \
                -type f 2>/dev/null | grep -q .; then
               echo "✅ تم العثور على مشروع Android في المستودع"
@@ -98,25 +98,25 @@ jobs:
             fi
             exit 0
           fi
-          
+
           echo "has_zip=true" >> "$GITHUB_OUTPUT"
           ZIP_FILE="${ZIP_FILES[0]}"
           ZIP_SIZE=$(du -sh "$ZIP_FILE" | cut -f1)
           echo "📦 تم العثور على: $ZIP_FILE ($ZIP_SIZE)"
-          
+
           [ ${#ZIP_FILES[@]} -gt 1 ] && echo "⚠️ عدة ملفات ZIP موجودة، سيتم استخدام: $ZIP_FILE"
-          
+
           # ── فك الضغط ──
           EXTRACT_DIR=$(mktemp -d)
           echo "📂 جاري فك الضغط..."
           unzip -q -o "$ZIP_FILE" -d "$EXTRACT_DIR"
-          
+
           # ── البحث الذكي عن جذر المشروع ──
           echo "🔍 البحث عن جذر المشروع..."
-          
+
           PROJECT_ROOT=""
-          
-          # الأولوية 1: settings.gradle (دائماً في جذر المشروع)
+
+          # الأولوية 1: settings.gradle
           for depth in $(seq 0 5); do
             FOUND=$(find "$EXTRACT_DIR" -mindepth "$depth" -maxdepth "$depth" \
               \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
@@ -127,7 +127,7 @@ jobs:
               break
             fi
           done
-          
+
           # الأولوية 2: build.gradle مع مجلد app/
           if [ -z "$PROJECT_ROOT" ]; then
             for depth in $(seq 0 5); do
@@ -143,7 +143,7 @@ jobs:
                 -not -path "*/build/*" -type f 2>/dev/null)
             done
           fi
-          
+
           # الأولوية 3: أي build.gradle
           if [ -z "$PROJECT_ROOT" ]; then
             for depth in $(seq 0 5); do
@@ -157,7 +157,7 @@ jobs:
               fi
             done
           fi
-          
+
           if [ -z "$PROJECT_ROOT" ]; then
             echo "❌ خطأ: لم يتم العثور على مشروع Gradle داخل ZIP!"
             echo ""
@@ -166,30 +166,31 @@ jobs:
             rm -rf "$EXTRACT_DIR"
             exit 1
           fi
-          
+
           echo "📁 جذر المشروع: $PROJECT_ROOT"
-          
+
           # ── نسخ ملفات المشروع ──
           GITHUB_BACKUP=$(mktemp -d)
           cp -r .github "$GITHUB_BACKUP/" 2>/dev/null || true
-          
-          # حذف كل شيء ما عدا .git
+
           find . -maxdepth 1 -not -name '.' -not -name '.git' -exec rm -rf {} + 2>/dev/null || true
-          
-          # نسخ ملفات المشروع
+
           shopt -s dotglob nullglob
           cp -rf "$PROJECT_ROOT"/* ./ 2>/dev/null || true
           find "$PROJECT_ROOT" -maxdepth 1 -name ".*" \
             -not -name "." -not -name ".." -not -name ".git" \
             -exec cp -rf {} ./ \; 2>/dev/null || true
           shopt -u dotglob nullglob
-          
-          # استعادة مجلد workflow
+
           cp -rf "$GITHUB_BACKUP/.github" ./ 2>/dev/null || true
-          
-          # تنظيف
+
           rm -rf "$EXTRACT_DIR" "$GITHUB_BACKUP"
-          
+
+          # ── حذف مجلدات build السابقة ──
+          echo "🧹 تنظيف مجلدات البناء السابقة..."
+          find . -type d -name "build" -not -path "./.git/*" -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name ".gradle" -not -path "./.git/*" -exec rm -rf {} + 2>/dev/null || true
+
           echo ""
           echo "📋 هيكل المشروع بعد الاستخراج:"
           find . -maxdepth 2 -not -path './.git/*' -not -path './.git' \
@@ -198,35 +199,45 @@ jobs:
 
       # ┌─────────────────────────────────────────────┐
       # │  🔍 STEP 3: Auto-Detect Configuration       │
+      # │  ⚠️ لا نستخدم pipefail هنا لأن grep قد      │
+      # │     يرجع exit 1 عند عدم وجود تطابق          │
       # └─────────────────────────────────────────────┘
       - name: 🔍 Auto-Detect Project Configuration
         id: config
+        shell: bash
         run: |
-          set -eo pipefail
-          
           echo "╔══════════════════════════════════════════╗"
           echo "║  🔍 Auto-Detection Engine                ║"
           echo "╚══════════════════════════════════════════╝"
           echo ""
-          
-          # ══ Helper Function ══
-          # البحث في ملفات Gradle مع تجاهل مجلدات البناء
-          ggrep() {
+
+          # ══════════════════════════════════════
+          # دالة آمنة للبحث في ملفات Gradle
+          # لا تفشل أبداً حتى لو لم تجد نتائج
+          # ══════════════════════════════════════
+          safe_grep() {
             grep -rh "$@" \
               --include="*.gradle" \
               --include="*.gradle.kts" \
               --exclude-dir=build \
               --exclude-dir=.gradle \
               --exclude-dir=.gradle-cache \
-              . 2>/dev/null || true
+              . 2>/dev/null || echo ""
           }
-          
+
+          # دالة لاستخراج أرقام من نص بأمان
+          extract_number() {
+            local input="$1"
+            local pattern="${2:-[0-9]+}"
+            echo "$input" | grep -oP "$pattern" 2>/dev/null | head -1 || echo ""
+          }
+
           # ══════════════════════════════
           # 🔤 كشف لغة البرمجة
           # ══════════════════════════════
-          KT=$(find . -name "*.kt" -not -path "*/build/*" -not -path "*/.gradle/*" -type f 2>/dev/null | wc -l)
-          JV=$(find . -name "*.java" -not -path "*/build/*" -not -path "*/.gradle/*" -not -path "*/generated/*" -type f 2>/dev/null | wc -l)
-          
+          KT=$(find . -name "*.kt" -not -path "*/build/*" -not -path "*/.gradle/*" -type f 2>/dev/null | wc -l || echo "0")
+          JV=$(find . -name "*.java" -not -path "*/build/*" -not -path "*/.gradle/*" -not -path "*/generated/*" -type f 2>/dev/null | wc -l || echo "0")
+
           if [ "$KT" -gt 0 ] && [ "$JV" -gt 0 ]; then
             LANG="kotlin+java"
             echo "🟣🟠 لغة المشروع: Kotlin ($KT ملف) + Java ($JV ملف)"
@@ -241,7 +252,7 @@ jobs:
             echo "⚪ لم يتم كشف ملفات مصدرية"
           fi
           echo "language=$LANG" >> "$GITHUB_OUTPUT"
-          
+
           # ══════════════════════════════
           # 📝 كشف نوع DSL
           # ══════════════════════════════
@@ -252,102 +263,178 @@ jobs:
             echo "dsl=groovy" >> "$GITHUB_OUTPUT"
             echo "📝 نوع DSL: Groovy"
           fi
-          
+
+          # ══════════════════════════════
+          # 📄 قراءة جميع ملفات Gradle مرة واحدة
+          # ══════════════════════════════
+          GRADLE_CONTENT=$(safe_grep "")
+
           # ══════════════════════════════
           # ☕ كشف إصدار JDK
           # ══════════════════════════════
           INPUT_JDK="${{ github.event.inputs.java_version }}"
-          
+
           if [ -n "$INPUT_JDK" ] && [ "$INPUT_JDK" != "auto" ]; then
             JDK="$INPUT_JDK"
             echo "☕ إصدار JDK (يدوي): $JDK"
           else
-            JDK="17"  # الافتراضي
-            
-            # البحث في ملفات Gradle
-            GRADLE_CONTENT=$(ggrep "")
-            
-            if echo "$GRADLE_CONTENT" | grep -qP "VERSION_21|jvmTarget.*[\"']21[\"']|sourceCompatibility.*21|JavaLanguageVersion\.of\(21\)"; then
+            JDK="17"
+
+            if echo "$GRADLE_CONTENT" | grep -qP "VERSION_21|jvmTarget.*[\"']21[\"']|sourceCompatibility.*21|JavaLanguageVersion\.of\(21\)" 2>/dev/null; then
               JDK="21"
-            elif echo "$GRADLE_CONTENT" | grep -qP "VERSION_17|jvmTarget.*[\"']17[\"']|sourceCompatibility.*17|JavaLanguageVersion\.of\(17\)"; then
+            elif echo "$GRADLE_CONTENT" | grep -qP "VERSION_17|jvmTarget.*[\"']17[\"']|sourceCompatibility.*17|JavaLanguageVersion\.of\(17\)" 2>/dev/null; then
               JDK="17"
-            elif echo "$GRADLE_CONTENT" | grep -qP "VERSION_11|jvmTarget.*[\"']11[\"']|sourceCompatibility.*11|JavaLanguageVersion\.of\(11\)"; then
+            elif echo "$GRADLE_CONTENT" | grep -qP "VERSION_11|jvmTarget.*[\"']11[\"']|sourceCompatibility.*11|JavaLanguageVersion\.of\(11\)" 2>/dev/null; then
               JDK="11"
-            elif echo "$GRADLE_CONTENT" | grep -qP "VERSION_1_8|jvmTarget.*[\"']1\.8[\"']|jvmTarget.*[\"']8[\"']|sourceCompatibility.*1\.8|JavaLanguageVersion\.of\(8\)"; then
-              JDK="17"  # JDK 17 يدعم target 1.8
+            elif echo "$GRADLE_CONTENT" | grep -qP "VERSION_1_8|jvmTarget.*[\"']1\.8[\"']|jvmTarget.*[\"']8[\"']|sourceCompatibility.*1\.8|JavaLanguageVersion\.of\(8\)" 2>/dev/null; then
+              JDK="17"
             fi
-            
+
             echo "☕ إصدار JDK (تلقائي): $JDK"
           fi
           echo "jdk_version=$JDK" >> "$GITHUB_OUTPUT"
-          
+
           # ══════════════════════════════
-          # 🤖 كشف إصدارات SDK
+          # 🤖 كشف إصدارات SDK (بأمان)
           # ══════════════════════════════
-          
-          # compileSdk
+
+          # --- compileSdk ---
           COMPILE_SDK=""
+
           # أولاً: البحث في Version Catalog
           if [ -f "gradle/libs.versions.toml" ]; then
             COMPILE_SDK=$(grep -iP "^\s*(compileSdk|compile-sdk|android-compile)" \
-              gradle/libs.versions.toml 2>/dev/null | grep -oP '\d+' | head -1 || true)
+              gradle/libs.versions.toml 2>/dev/null | grep -oP '[0-9]+' 2>/dev/null | head -1 || echo "")
           fi
+
           # ثانياً: البحث في Gradle files
           if [ -z "$COMPILE_SDK" ]; then
-            COMPILE_SDK=$(ggrep "compileSdk\|compileSdkVersion" | \
-              grep -v "//" | grep -v "/*" | grep -oP '\d{2,}' | sort -rn | head -1)
+            RAW_COMPILE=$(echo "$GRADLE_CONTENT" | grep -i "compileSdk\|compileSdkVersion" 2>/dev/null || echo "")
+            if [ -n "$RAW_COMPILE" ]; then
+              # حذف التعليقات وسحب الأرقام
+              COMPILE_SDK=$(echo "$RAW_COMPILE" \
+                | grep -v '^\s*//' \
+                | grep -v '^\s*\*' \
+                | grep -oP '[0-9]{2,}' 2>/dev/null \
+                | sort -rn \
+                | head -1 || echo "")
+            fi
           fi
-          [ -z "$COMPILE_SDK" ] && COMPILE_SDK="35"
-          
-          # targetSdk
-          TARGET_SDK=$(ggrep "targetSdk\b\|targetSdkVersion" | \
-            grep -v "//" | grep -oP '\d{2,}' | sort -rn | head -1)
-          [ -z "$TARGET_SDK" ] && TARGET_SDK="$COMPILE_SDK"
-          
-          # minSdk
-          MIN_SDK=$(ggrep "minSdk\b\|minSdkVersion" | \
-            grep -v "//" | grep -oP '\d+' | sort -n | head -1)
-          [ -z "$MIN_SDK" ] && MIN_SDK="21"
-          
-          # buildToolsVersion
-          BUILD_TOOLS=$(ggrep "buildToolsVersion" | grep -oP '"[^"]*"' | tr -d '"' | head -1)
-          
+
+          # القيمة الافتراضية
+          if [ -z "$COMPILE_SDK" ]; then
+            COMPILE_SDK="35"
+            echo "  ℹ️ لم يتم كشف compileSdk - استخدام الافتراضي: 35"
+          fi
+
+          # --- targetSdk ---
+          TARGET_SDK=""
+          RAW_TARGET=$(echo "$GRADLE_CONTENT" | grep -iE "targetSdk[^V]|targetSdkVersion" 2>/dev/null || echo "")
+          if [ -n "$RAW_TARGET" ]; then
+            TARGET_SDK=$(echo "$RAW_TARGET" \
+              | grep -v '^\s*//' \
+              | grep -oP '[0-9]{2,}' 2>/dev/null \
+              | sort -rn \
+              | head -1 || echo "")
+          fi
+          if [ -z "$TARGET_SDK" ]; then
+            TARGET_SDK="$COMPILE_SDK"
+          fi
+
+          # --- minSdk ---
+          MIN_SDK=""
+          RAW_MIN=$(echo "$GRADLE_CONTENT" | grep -iE "minSdk[^V]|minSdkVersion" 2>/dev/null || echo "")
+          if [ -n "$RAW_MIN" ]; then
+            MIN_SDK=$(echo "$RAW_MIN" \
+              | grep -v '^\s*//' \
+              | grep -oP '[0-9]+' 2>/dev/null \
+              | sort -n \
+              | head -1 || echo "")
+          fi
+          if [ -z "$MIN_SDK" ]; then
+            MIN_SDK="21"
+          fi
+
+          # --- buildToolsVersion ---
+          BUILD_TOOLS=""
+          RAW_BT=$(echo "$GRADLE_CONTENT" | grep -i "buildToolsVersion" 2>/dev/null || echo "")
+          if [ -n "$RAW_BT" ]; then
+            BUILD_TOOLS=$(echo "$RAW_BT" | grep -oP '"[^"]*"' 2>/dev/null | tr -d '"' | head -1 || echo "")
+          fi
+
+          # كتابة المخرجات
           echo "compile_sdk=$COMPILE_SDK" >> "$GITHUB_OUTPUT"
           echo "target_sdk=$TARGET_SDK" >> "$GITHUB_OUTPUT"
           echo "min_sdk=$MIN_SDK" >> "$GITHUB_OUTPUT"
           echo "build_tools=$BUILD_TOOLS" >> "$GITHUB_OUTPUT"
-          
+
           echo "🤖 Compile SDK: $COMPILE_SDK"
           echo "🎯 Target SDK:  $TARGET_SDK"
           echo "📱 Min SDK:     $MIN_SDK"
-          [ -n "$BUILD_TOOLS" ] && echo "🔧 Build Tools: $BUILD_TOOLS" || echo "🔧 Build Tools: تلقائي"
-          
+          if [ -n "$BUILD_TOOLS" ]; then
+            echo "🔧 Build Tools: $BUILD_TOOLS"
+          else
+            echo "🔧 Build Tools: تلقائي"
+          fi
+
           # ══════════════════════════════
           # 🔧 كشف NDK و CMake
           # ══════════════════════════════
-          NDK_VER=$(ggrep "ndkVersion" | grep -oP '"[^"]*"' | tr -d '"' | head -1)
-          CMAKE_VER=$(ggrep "cmake" | grep -oP 'version\s*"?\K[0-9][0-9.]*' | head -1)
-          
+          NDK_VER=""
+          RAW_NDK=$(echo "$GRADLE_CONTENT" | grep -i "ndkVersion" 2>/dev/null || echo "")
+          if [ -n "$RAW_NDK" ]; then
+            NDK_VER=$(echo "$RAW_NDK" | grep -oP '"[^"]*"' 2>/dev/null | tr -d '"' | head -1 || echo "")
+          fi
+
+          CMAKE_VER=""
+          RAW_CMAKE=$(echo "$GRADLE_CONTENT" | grep -i "cmake" 2>/dev/null || echo "")
+          if [ -n "$RAW_CMAKE" ]; then
+            CMAKE_VER=$(echo "$RAW_CMAKE" | grep -oP 'version\s*"?\K[0-9][0-9.]*' 2>/dev/null | head -1 || echo "")
+          fi
+
           echo "ndk_version=$NDK_VER" >> "$GITHUB_OUTPUT"
           echo "cmake_version=$CMAKE_VER" >> "$GITHUB_OUTPUT"
-          
-          [ -n "$NDK_VER" ] && echo "🔧 NDK:   $NDK_VER" || echo "🔧 NDK:   غير مستخدم"
-          [ -n "$CMAKE_VER" ] && echo "🔧 CMake: $CMAKE_VER" || echo "🔧 CMake: غير مستخدم"
-          
+
+          if [ -n "$NDK_VER" ]; then
+            echo "🔧 NDK:   $NDK_VER"
+          else
+            echo "🔧 NDK:   غير مستخدم"
+          fi
+          if [ -n "$CMAKE_VER" ]; then
+            echo "🔧 CMake: $CMAKE_VER"
+          else
+            echo "🔧 CMake: غير مستخدم"
+          fi
+
           # ══════════════════════════════
           # 📦 كشف إصدار Gradle
           # ══════════════════════════════
           GRADLE_VER=""
           if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
-            GRADLE_VER=$(grep "distributionUrl" gradle/wrapper/gradle-wrapper.properties 2>/dev/null | \
-              grep -oP 'gradle-\K[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
+            GRADLE_VER=$(grep "distributionUrl" gradle/wrapper/gradle-wrapper.properties 2>/dev/null \
+              | grep -oP 'gradle-\K[0-9]+\.[0-9]+(\.[0-9]+)?' 2>/dev/null || echo "")
           fi
-          [ -z "$GRADLE_VER" ] && GRADLE_VER="8.7"
+          if [ -z "$GRADLE_VER" ]; then
+            GRADLE_VER="8.7"
+          fi
           echo "gradle_version=$GRADLE_VER" >> "$GITHUB_OUTPUT"
           echo "📦 Gradle: $GRADLE_VER"
-          
+
+          # ══════════════════════════════
+          # 📱 كشف applicationId
+          # ══════════════════════════════
+          APP_ID=""
+          RAW_APPID=$(echo "$GRADLE_CONTENT" | grep -i "applicationId" 2>/dev/null || echo "")
+          if [ -n "$RAW_APPID" ]; then
+            APP_ID=$(echo "$RAW_APPID" | grep -oP '"[^"]*"' 2>/dev/null | tr -d '"' | head -1 || echo "")
+          fi
+          if [ -n "$APP_ID" ]; then
+            echo "📱 Application ID: $APP_ID"
+          fi
+
           echo ""
           echo "══════════════════════════════════════════"
+          echo "✅ اكتمل الكشف التلقائي بنجاح"
 
       # ┌─────────────────────────────────────────────┐
       # │  ☕ STEP 4: Setup JDK                        │
@@ -368,68 +455,62 @@ jobs:
         run: |
           echo "📜 قبول التراخيص..."
           mkdir -p "$ANDROID_HOME/licenses"
-          
-          # كتابة جميع التراخيص المطلوبة
+
           cat > "$ANDROID_HOME/licenses/android-sdk-license" << 'LICENSES'
           8933bad161af4178b1185d1a37fbf41ea5269c55
           d56f5187479451eabf01fb78af6dfcb131a6481e
           24333f8a63b6825ea9c5514f83c2829b004d1fee
           LICENSES
-          
+
           echo "84831b9409646a918e30573bab4c9c91346d8abd" > \
             "$ANDROID_HOME/licenses/android-sdk-preview-license"
           echo "d975f751698a77b662f1254ddbeed3901e976f5a" > \
             "$ANDROID_HOME/licenses/intel-android-extra-license"
-          
+
           yes 2>/dev/null | sdkmanager --licenses > /dev/null 2>&1 || true
-          
+
           echo ""
           echo "📦 تثبيت مكونات SDK المطلوبة..."
-          
+
           COMPILE_SDK="${{ steps.config.outputs.compile_sdk }}"
           TARGET_SDK="${{ steps.config.outputs.target_sdk }}"
           BUILD_TOOLS="${{ steps.config.outputs.build_tools }}"
           NDK_VER="${{ steps.config.outputs.ndk_version }}"
           CMAKE_VER="${{ steps.config.outputs.cmake_version }}"
-          
-          # تثبيت المنصات
+
           echo "  📦 platforms;android-${COMPILE_SDK}"
           sdkmanager "platforms;android-${COMPILE_SDK}" > /dev/null 2>&1 || true
-          
+
           if [ "$TARGET_SDK" != "$COMPILE_SDK" ]; then
             echo "  📦 platforms;android-${TARGET_SDK}"
             sdkmanager "platforms;android-${TARGET_SDK}" > /dev/null 2>&1 || true
           fi
-          
-          # أدوات المنصة
+
           echo "  📦 platform-tools"
           sdkmanager "platform-tools" > /dev/null 2>&1 || true
-          
-          # أدوات البناء
+
           if [ -n "$BUILD_TOOLS" ]; then
             echo "  📦 build-tools;${BUILD_TOOLS}"
             sdkmanager "build-tools;${BUILD_TOOLS}" > /dev/null 2>&1 || true
-          else
-            # تثبيت أحدث إصدار متوافق
-            LATEST_BT=$(sdkmanager --list 2>/dev/null | grep -oP "build-tools;\S+" | tail -1)
-            if [ -n "$LATEST_BT" ]; then
-              echo "  📦 $LATEST_BT (أحدث إصدار)"
-              sdkmanager "$LATEST_BT" > /dev/null 2>&1 || true
-            fi
           fi
-          
-          # NDK
+
+          # تثبيت أحدث build-tools كاحتياط
+          LATEST_BT=$(sdkmanager --list 2>/dev/null | grep -oP "build-tools;\S+" | tail -1 || echo "")
+          if [ -n "$LATEST_BT" ]; then
+            echo "  📦 $LATEST_BT"
+            sdkmanager "$LATEST_BT" > /dev/null 2>&1 || true
+          fi
+
           if [ -n "$NDK_VER" ]; then
             echo "  📦 ndk;${NDK_VER}"
             sdkmanager "ndk;${NDK_VER}" > /dev/null 2>&1 || true
           fi
-          
-          # CMake
+
           if [ -n "$CMAKE_VER" ]; then
             echo "  📦 cmake;${CMAKE_VER}"
             sdkmanager "cmake;${CMAKE_VER}" > /dev/null 2>&1 || true
           fi
-          
+
           echo ""
           echo "✅ تم تثبيت جميع مكونات SDK"
 
@@ -438,15 +519,15 @@ jobs:
       # └─────────────────────────────────────────────┘
       - name: 📝 Configure Project
         run: |
-          # إنشاء local.properties
           {
             echo "sdk.dir=$ANDROID_HOME"
             if [ -n "${{ steps.config.outputs.ndk_version }}" ]; then
               echo "ndk.dir=$ANDROID_HOME/ndk/${{ steps.config.outputs.ndk_version }}"
             fi
           } > local.properties
-          
+
           echo "✅ تم إنشاء local.properties"
+          cat local.properties
 
       # ┌─────────────────────────────────────────────┐
       # │  🔧 STEP 7: Setup Gradle                    │
@@ -454,30 +535,25 @@ jobs:
       - name: 🔧 Setup Gradle Wrapper
         run: |
           echo "🔧 إعداد Gradle Wrapper..."
-          
+
           GRADLE_VER="${{ steps.config.outputs.gradle_version }}"
-          
-          # ── الحالة 1: gradlew موجود ──
+
           if [ -f "gradlew" ]; then
             chmod +x gradlew
             echo "✅ gradlew موجود وجاهز"
-            
-            # التحقق من وجود wrapper jar
-            if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-              echo "✅ gradle-wrapper.jar موجود"
-            else
+
+            if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
               echo "⚠️ gradle-wrapper.jar مفقود - جاري الاسترداد..."
               mkdir -p gradle/wrapper
-              
-              # تحميل Gradle وإعادة إنشاء wrapper
+
               wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" \
-                -O /tmp/gradle-dl.zip || {
+                -O /tmp/gradle-dl.zip 2>/dev/null || {
                 echo "  ⚠️ فشل التحميل، محاولة الإصدار 8.7..."
                 GRADLE_VER="8.7"
                 wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" \
                   -O /tmp/gradle-dl.zip
               }
-              
+
               unzip -q /tmp/gradle-dl.zip -d /tmp/gradle-install
               /tmp/gradle-install/gradle-${GRADLE_VER}/bin/gradle wrapper \
                 --gradle-version="${GRADLE_VER}" 2>/dev/null || true
@@ -485,18 +561,16 @@ jobs:
               chmod +x gradlew
               echo "✅ تم استرداد Gradle Wrapper"
             fi
-          
-          # ── الحالة 2: gradlew غير موجود ──
           else
             echo "⚠️ gradlew غير موجود - جاري الإنشاء..."
-            
+
             wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" \
-              -O /tmp/gradle-dl.zip || {
+              -O /tmp/gradle-dl.zip 2>/dev/null || {
               GRADLE_VER="8.7"
               wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" \
                 -O /tmp/gradle-dl.zip
             }
-            
+
             unzip -q /tmp/gradle-dl.zip -d /tmp/gradle-install
             /tmp/gradle-install/gradle-${GRADLE_VER}/bin/gradle wrapper \
               --gradle-version="${GRADLE_VER}"
@@ -504,7 +578,7 @@ jobs:
             chmod +x gradlew
             echo "✅ تم إنشاء Gradle Wrapper (v${GRADLE_VER})"
           fi
-          
+
           echo ""
           echo "📋 التحقق النهائي:"
           [ -f "gradlew" ]                              && echo "  ✅ gradlew" || echo "  ❌ gradlew"
@@ -533,13 +607,18 @@ jobs:
       - name: 📥 Resolve & Download Dependencies
         run: |
           echo "📥 جاري تحميل المكتبات والاعتماديات..."
-          
-          # محاولة حل الاعتماديات أولاً
+
+          # عرض المهام المتاحة أولاً للتشخيص
+          echo "📋 المهام المتاحة:"
+          ./gradlew tasks --all 2>&1 | grep -i "assemble" | head -10 || true
+
+          echo ""
+          echo "📥 تحميل الاعتماديات..."
           ./gradlew dependencies \
             --no-daemon \
             --stacktrace \
-            2>&1 | tail -20 || true
-          
+            2>&1 | tail -30 || true
+
           echo ""
           echo "✅ تم تحميل الاعتماديات"
 
@@ -556,15 +635,31 @@ jobs:
           echo "║  🏗️ بناء Debug APK                       ║"
           echo "╚══════════════════════════════════════════╝"
           echo ""
-          
-          ./gradlew assembleDebug \
+
+          # محاولة أولى: assembleDebug
+          if ./gradlew assembleDebug \
             --no-daemon \
             --stacktrace \
             --build-cache \
-            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
-          
-          echo ""
-          echo "✅ تم بناء Debug APK بنجاح!"
+            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"; then
+            echo ""
+            echo "✅ تم بناء Debug APK بنجاح!"
+          else
+            echo ""
+            echo "⚠️ فشل assembleDebug - محاولة بديلة..."
+            echo ""
+
+            # محاولة ثانية: بدون cache
+            ./gradlew assembleDebug \
+              --no-daemon \
+              --stacktrace \
+              --no-build-cache \
+              --refresh-dependencies \
+              -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+
+            echo ""
+            echo "✅ تم بناء Debug APK بنجاح (المحاولة الثانية)!"
+          fi
 
       - name: 🏗️ Build Release APK
         if: >-
@@ -576,12 +671,11 @@ jobs:
           echo "║  🏗️ بناء Release APK                     ║"
           echo "╚══════════════════════════════════════════╝"
           echo ""
-          
-          # التحقق من وجود signing config
+
           if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
             echo "🔐 تم العثور على مفتاح التوقيع..."
             echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > /tmp/release-keystore.jks
-            
+
             ./gradlew assembleRelease \
               --no-daemon \
               --stacktrace \
@@ -591,7 +685,7 @@ jobs:
               -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
               -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}" \
               -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
-            
+
             rm -f /tmp/release-keystore.jks
           else
             echo "⚠️ لا يوجد مفتاح توقيع - سيتم بناء APK غير موقع"
@@ -610,7 +704,7 @@ jobs:
               exit 1
             }
           fi
-          
+
           echo ""
           echo "✅ تم بناء Release APK بنجاح!"
         continue-on-error: true
@@ -637,7 +731,7 @@ jobs:
           echo "╠══════════════════════════════════════════════════╣"
           echo "║  📱 ملفات APK المُنشأة:                          ║"
           echo "║                                                  ║"
-          
+
           APK_COUNT=0
           while IFS= read -r apk; do
             [ -z "$apk" ] && continue
@@ -653,14 +747,14 @@ jobs:
             -not -path "*/intermediates/*" \
             -not -path "*/.gradle/*" \
             -type f 2>/dev/null | sort)
-          
+
           if [ "$APK_COUNT" -eq 0 ]; then
             echo "║  ❌ لم يتم إنشاء أي ملف APK                    ║"
           else
             echo "║                                                  ║"
             echo "║  📦 المجموع: $APK_COUNT ملف APK                 ║"
           fi
-          
+
           echo "║                                                  ║"
           echo "╚══════════════════════════════════════════════════╝"
           echo ""
@@ -691,7 +785,7 @@ jobs:
           retention-days: 90
           compression-level: 0
 
-      - name: 📤 Upload All APKs (Backup)
+      - name: 📤 Upload All APKs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -721,7 +815,7 @@ jobs:
         if: always()
         run: |
           APK_COUNT=$(find . -name "*.apk" -not -path "*/intermediates/*" -type f 2>/dev/null | wc -l)
-          
+
           if [ "$APK_COUNT" -gt 0 ]; then
             echo "🎉 تم البناء بنجاح! ($APK_COUNT ملف APK)"
             echo "📥 اذهب إلى Artifacts لتحميل ملفات APK"
