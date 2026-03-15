@@ -22,33 +22,46 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-
       - name: Extract project from ZIP
         run: |
           ZIP=$(find . -maxdepth 2 -name "*.zip" | head -1)
           if [ -n "$ZIP" ]; then
-            echo "Found: $ZIP"
+            echo "Found ZIP: $ZIP"
             unzip -q "$ZIP" -d /tmp/extracted
-            PROJ=$(find /tmp/extracted -name "build.gradle" -path "*/app/build.gradle" | head -1 | xargs dirname | xargs dirname)
+            PROJ=$(find /tmp/extracted -name "build.gradle" -path "*/app/build.gradle" \
+                   | head -1 | xargs dirname | xargs dirname)
             echo "Project root: $PROJ"
-            cp -r "$PROJ/." .
+            if [ "$PROJ" != "." ] && [ -n "$PROJ" ]; then
+              cp -r "$PROJ/." .
+            fi
           fi
+          echo "=== Files ===" && ls -la
+          echo "=== app/ ===" && ls app/ 2>/dev/null || echo "app/ not found"
 
-      - name: Download Gradle Wrapper JAR
+      - name: Download gradle-wrapper.jar
         run: |
           mkdir -p gradle/wrapper
-          curl -sSfL "https://services.gradle.org/distributions/gradle-8.4-bin.zip" -o /tmp/gradle.zip
-          unzip -q /tmp/gradle.zip -d /tmp/gradle-dist
-          JAR=$(find /tmp/gradle-dist -name "*wrapper*.jar" | head -1)
-          cp "$JAR" gradle/wrapper/gradle-wrapper.jar
-          echo "OK: $(du -sh gradle/wrapper/gradle-wrapper.jar)"
+          # Download official Gradle 8.4 distribution and extract wrapper jar
+          curl -sSfL \
+            "https://services.gradle.org/distributions/gradle-8.4-bin.zip" \
+            -o /tmp/gradle-bin.zip
+          unzip -q /tmp/gradle-bin.zip -d /tmp/gradle-bin
+          JAR=$(find /tmp/gradle-bin -name "gradle-wrapper.jar" 2>/dev/null | head -1)
+          if [ -z "$JAR" ]; then
+            JAR=$(find /tmp/gradle-bin -name "*wrapper*.jar" 2>/dev/null | head -1)
+          fi
+          if [ -n "$JAR" ]; then
+            cp "$JAR" gradle/wrapper/gradle-wrapper.jar
+            echo "OK: gradle-wrapper.jar ($(du -sh gradle/wrapper/gradle-wrapper.jar | cut -f1))"
+          else
+            echo "ERROR: could not find wrapper jar" && exit 1
+          fi
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.4"
+          validate-wrappers: false
 
       - name: Make gradlew executable
         run: chmod +x gradlew
@@ -63,31 +76,30 @@ jobs:
             -dname "CN=Android Debug,O=Android,C=US" \
             -validity 10000 \
             -keyalg RSA -keysize 2048 -noprompt
+          echo "Keystore created"
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Build Release APK
-        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        run: gradle assembleRelease --no-daemon --stacktrace
 
-      - name: Show APK info
+      - name: List APKs
         run: |
-          echo "=== Debug APK ==="
-          find app/build/outputs/apk/debug -name "*.apk" -exec ls -lh {} \;
-          echo "=== Release APK ==="
-          find app/build/outputs/apk/release -name "*.apk" -exec ls -lh {} \;
+          echo "=== Debug ===" && find app/build/outputs/apk/debug -name "*.apk" -exec ls -lh {} \;
+          echo "=== Release ===" && find app/build/outputs/apk/release -name "*.apk" -exec ls -lh {} \;
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: AndroidIDE-Debug
+          name: AndroidIDE-Debug-${{ github.run_number }}
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 30
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: AndroidIDE-Release
+          name: AndroidIDE-Release-${{ github.run_number }}
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
 
@@ -95,9 +107,9 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "build-${{ github.run_number }}"
-          name: "AndroidIDE — Build #${{ github.run_number }}"
-          body: "Build #${{ github.run_number }} — ${{ github.event.head_commit.message }}"
+          tag_name: "v1.0-build${{ github.run_number }}"
+          name: "AndroidIDE Build #${{ github.run_number }}"
+          body: "Build #${{ github.run_number }}"
           files: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk
