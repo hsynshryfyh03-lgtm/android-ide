@@ -1,4 +1,4 @@
-name: 🤖 Build APK
+name: Build AndroidIDE APK
 
 on:
   push:
@@ -13,48 +13,48 @@ jobs:
 
     steps:
 
-      - name: 📥 Checkout
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ استخراج ZIP تلقائياً إذا كانت الملفات مضغوطة
-      - name: 📦 Extract project ZIP if present
-        run: |
-          ZIP=$(find . -maxdepth 2 -name "*.zip" | head -1)
-          if [ -n "$ZIP" ]; then
-            echo "Found ZIP: $ZIP — extracting..."
-            unzip -q "$ZIP" -d /tmp/extracted
-          fi
-
-          # ابحث عن app/build.gradle في أي مكان
-          PROJ=$(find . /tmp/extracted -name "build.gradle" -path "*/app/build.gradle" 2>/dev/null \
-                 | head -1 | xargs -I{} dirname {} | xargs -I{} dirname {})
-
-          echo "Project root: $PROJ"
-
-          # انقل كل شيء للـ workspace إذا كانت في مجلد فرعي
-          if [ "$PROJ" != "." ] && [ -n "$PROJ" ]; then
-            cp -r "$PROJ/." .
-          fi
-
-          echo "=== Files at root ==="
-          ls -la
-          echo "=== app/ exists? ==="
-          ls app/ 2>/dev/null || echo "app/ NOT found"
-
-      - name: ☕ JDK 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: ⚙️ Setup Gradle 8.4
-        uses: gradle/actions/setup-gradle@v4
+      - name: Cache Gradle
+        uses: actions/cache@v4
         with:
-          gradle-version: "8.4"
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
 
-      - name: 🔐 Generate debug keystore
+      - name: Extract project from ZIP
         run: |
-          mkdir -p app
+          ZIP=$(find . -maxdepth 2 -name "*.zip" | head -1)
+          if [ -n "$ZIP" ]; then
+            echo "Found: $ZIP"
+            unzip -q "$ZIP" -d /tmp/extracted
+            PROJ=$(find /tmp/extracted -name "build.gradle" -path "*/app/build.gradle" | head -1 | xargs dirname | xargs dirname)
+            echo "Project root: $PROJ"
+            cp -r "$PROJ/." .
+          fi
+
+      - name: Download Gradle Wrapper JAR
+        run: |
+          mkdir -p gradle/wrapper
+          curl -sSfL "https://services.gradle.org/distributions/gradle-8.4-bin.zip" -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /tmp/gradle-dist
+          JAR=$(find /tmp/gradle-dist -name "*wrapper*.jar" | head -1)
+          cp "$JAR" gradle/wrapper/gradle-wrapper.jar
+          echo "OK: $(du -sh gradle/wrapper/gradle-wrapper.jar)"
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Generate debug keystore
+        run: |
           keytool -genkeypair \
             -alias androiddebugkey \
             -keypass android \
@@ -63,37 +63,41 @@ jobs:
             -dname "CN=Android Debug,O=Android,C=US" \
             -validity 10000 \
             -keyalg RSA -keysize 2048 -noprompt
-          echo "✓ Keystore ready"
 
-      - name: 🔨 Build Debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: 📦 Build Release APK
-        run: gradle assembleRelease --no-daemon --stacktrace
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: 📤 Upload Debug APK
+      - name: Show APK info
+        run: |
+          echo "=== Debug APK ==="
+          find app/build/outputs/apk/debug -name "*.apk" -exec ls -lh {} \;
+          echo "=== Release APK ==="
+          find app/build/outputs/apk/release -name "*.apk" -exec ls -lh {} \;
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: APK-Debug-build${{ github.run_number }}
+          name: AndroidIDE-Debug
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 30
 
-      - name: 📤 Upload Release APK
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: APK-Release-build${{ github.run_number }}
+          name: AndroidIDE-Release
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
 
-      - name: 🚀 Create GitHub Release
-        if: github.event_name == 'push'
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "build-${{ github.run_number }}"
-          name: "Build #${{ github.run_number }}"
-          body: |
-            📱 AndroidIDE APK — Build #${{ github.run_number }}
-            📝 ${{ github.event.head_commit.message }}
+          name: "AndroidIDE — Build #${{ github.run_number }}"
+          body: "Build #${{ github.run_number }} — ${{ github.event.head_commit.message }}"
           files: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk
