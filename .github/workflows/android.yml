@@ -1,949 +1,731 @@
-# ╔══════════════════════════════════════════════════════════════════╗
-# ║  🚀 ULTIMATE ANDROID APK BUILDER                               ║
-# ║  يدعم: Android Native | Flutter | React Native | Ionic | MAUI  ║
-# ║  يكشف المشروع تلقائياً ويبني APK بدون أي إعداد يدوي            ║
-# ╚══════════════════════════════════════════════════════════════════╝
+# ╔════════════════════════════════════════════════════════════════╗
+# ║  🚀 Android APK Smart Builder                                 ║
+# ║  بديل ذكي وقوي لـ Android Studio على GitHub Actions           ║
+# ║                                                                ║
+# ║  ✅ يدعم Java + Kotlin                                        ║
+# ║  ✅ يكتشف إعدادات المشروع تلقائياً                             ║
+# ║  ✅ يستورد جميع المكتبات تلقائياً                              ║
+# ║  ✅ يبني APK من ملف ZIP مباشرة                                ║
+# ║  ✅ يدعم NDK + CMake                                          ║
+# ║  ✅ يدعم Groovy DSL و Kotlin DSL                              ║
+# ║  ✅ يدعم Version Catalogs (libs.versions.toml)                ║
+# ╚════════════════════════════════════════════════════════════════╝
 
-name: "\U0001F680 Ultimate Android APK Builder"
+name: 🚀 Android APK Builder
 
 on:
   push:
-    branches: ["**"]
+    branches: ['**']
   pull_request:
-    branches: ["**"]
   workflow_dispatch:
     inputs:
       build_type:
-        description: "نوع البناء"
+        description: 'نوع البناء | Build Type'
         required: false
-        default: "debug"
+        default: 'debug'
         type: choice
         options:
           - debug
           - release
           - both
       java_version:
-        description: "إصدار Java (auto = كشف تلقائي)"
+        description: 'إصدار Java (اتركه فارغاً للكشف التلقائي)'
         required: false
-        default: "auto"
+        default: 'auto'
         type: choice
         options:
           - auto
-          - "8"
-          - "11"
-          - "17"
-          - "21"
-      clean_build:
-        description: "بناء نظيف"
-        required: false
-        default: false
-        type: boolean
+          - '8'
+          - '11'
+          - '17'
+          - '21'
 
 permissions:
   contents: read
-  actions: write
 
 env:
   GRADLE_OPTS: >-
     -Dorg.gradle.daemon=false
     -Dorg.gradle.parallel=true
     -Dorg.gradle.caching=true
-    -Dorg.gradle.jvmargs=-Xmx4g
-  ANDROID_HOME: /usr/local/lib/android/sdk
-  TERM: dumb
+    -Dorg.gradle.configuration-cache=false
+  JAVA_TOOL_OPTIONS: "-Xmx4g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError"
 
 jobs:
   build:
-    name: "\U0001F528 Build Android APK"
+    name: 🔨 Build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
+
       # ┌─────────────────────────────────────────────┐
-      # │  1. CHECKOUT                                 │
+      # │  📥 STEP 1: Checkout Repository             │
       # └─────────────────────────────────────────────┘
-      - name: "\U0001F4E5 Checkout Repository"
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          lfs: true
 
       # ┌─────────────────────────────────────────────┐
-      # │  2. ZIP EXTRACTION - استخراج المشروع المضغوط │
+      # │  📦 STEP 2: Smart ZIP Extraction            │
       # └─────────────────────────────────────────────┘
-      - name: "\U0001F4E6 Extract ZIP Project"
+      - name: 📦 Detect & Extract Project from ZIP
         id: extract
         run: |
           set -eo pipefail
-
-          echo "══════════════════════════════════════════"
-          echo "🔍 Searching for ZIP files..."
-          echo "══════════════════════════════════════════"
-
-          mapfile -t ZIP_FILES < <(find . -maxdepth 1 -name "*.zip" -type f 2>/dev/null | sort -r)
-
+          
+          echo "╔══════════════════════════════════════════╗"
+          echo "║  📦 Smart ZIP Detection & Extraction     ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+          
+          # ── البحث عن ملفات ZIP ──
+          mapfile -t ZIP_FILES < <(find . -maxdepth 1 -name "*.zip" -type f 2>/dev/null | sort)
+          
           if [ ${#ZIP_FILES[@]} -eq 0 ]; then
-            echo "ℹ️  No ZIP files found — using repo structure as-is"
-            echo "extracted=false" >> "$GITHUB_OUTPUT"
+            echo "📂 لا يوجد ملف ZIP - سيتم استخدام ملفات المشروع مباشرة"
+            echo "has_zip=false" >> "$GITHUB_OUTPUT"
+            
+            # التحقق من وجود مشروع Android
+            if find . -maxdepth 1 \( -name "settings.gradle*" -o -name "build.gradle*" \) \
+               -type f 2>/dev/null | grep -q .; then
+              echo "✅ تم العثور على مشروع Android في المستودع"
+            else
+              echo "❌ خطأ: لا يوجد مشروع Android!"
+              echo "   ارفع ملف ZIP للمشروع أو ادفع ملفات المشروع مباشرة"
+              exit 1
+            fi
             exit 0
           fi
-
-          echo "📦 Found ${#ZIP_FILES[@]} ZIP file(s):"
-          printf '   • %s (%s)\n' $(for f in "${ZIP_FILES[@]}"; do echo "$f"; du -h "$f" | cut -f1; done)
-
-          # ---------- pick the largest ZIP ----------
-          BEST=""
-          BEST_SIZE=0
-          for z in "${ZIP_FILES[@]}"; do
-            SZ=$(stat -c%s "$z" 2>/dev/null || echo 0)
-            if [ "$SZ" -gt "$BEST_SIZE" ]; then
-              BEST_SIZE=$SZ
-              BEST="$z"
-            fi
-          done
-          ZIP_FILE="$BEST"
-          echo ""
-          echo "📦 Extracting: $ZIP_FILE"
-
-          EXTRACT_DIR="/tmp/_zip_extract_$$"
-          mkdir -p "$EXTRACT_DIR"
-          unzip -q -o "$ZIP_FILE" -d "$EXTRACT_DIR" || {
-            echo "❌ unzip failed – trying jar xf"
-            cd "$EXTRACT_DIR" && jar xf "$OLDPWD/$ZIP_FILE" && cd "$OLDPWD"
-          }
-
-          # ---------- smart project-root detection ----------
-          echo "🔍 Detecting project root inside ZIP..."
-
-          find_marker() {
-            find "$EXTRACT_DIR" -maxdepth 5 -name "$1" -type f 2>/dev/null | head -1
-          }
-
+          
+          echo "has_zip=true" >> "$GITHUB_OUTPUT"
+          ZIP_FILE="${ZIP_FILES[0]}"
+          ZIP_SIZE=$(du -sh "$ZIP_FILE" | cut -f1)
+          echo "📦 تم العثور على: $ZIP_FILE ($ZIP_SIZE)"
+          
+          [ ${#ZIP_FILES[@]} -gt 1 ] && echo "⚠️ عدة ملفات ZIP موجودة، سيتم استخدام: $ZIP_FILE"
+          
+          # ── فك الضغط ──
+          EXTRACT_DIR=$(mktemp -d)
+          echo "📂 جاري فك الضغط..."
+          unzip -q -o "$ZIP_FILE" -d "$EXTRACT_DIR"
+          
+          # ── البحث الذكي عن جذر المشروع ──
+          echo "🔍 البحث عن جذر المشروع..."
+          
           PROJECT_ROOT=""
-
-          # Priority 1 — settings.gradle(.kts) at shallowest depth
-          for m in settings.gradle settings.gradle.kts; do
-            FOUND=$(find "$EXTRACT_DIR" -maxdepth 5 -name "$m" -type f 2>/dev/null \
-                    | awk -F/ '{print NF-1, $0}' | sort -n | head -1 | cut -d' ' -f2-)
+          
+          # الأولوية 1: settings.gradle (دائماً في جذر المشروع)
+          for depth in $(seq 0 5); do
+            FOUND=$(find "$EXTRACT_DIR" -mindepth "$depth" -maxdepth "$depth" \
+              \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+              -not -path "*/build/*" -type f 2>/dev/null | head -1)
             if [ -n "$FOUND" ]; then
               PROJECT_ROOT=$(dirname "$FOUND")
+              echo "  ✅ عثر على settings.gradle في العمق $depth"
               break
             fi
           done
-
-          # Priority 2 — build.gradle(.kts)
+          
+          # الأولوية 2: build.gradle مع مجلد app/
           if [ -z "$PROJECT_ROOT" ]; then
-            for m in build.gradle build.gradle.kts; do
-              FOUND=$(find_marker "$m")
-              [ -n "$FOUND" ] && PROJECT_ROOT=$(dirname "$FOUND") && break
+            for depth in $(seq 0 5); do
+              while IFS= read -r bf; do
+                DIR=$(dirname "$bf")
+                if [ -d "$DIR/app" ]; then
+                  PROJECT_ROOT="$DIR"
+                  echo "  ✅ عثر على build.gradle + app/ في العمق $depth"
+                  break 2
+                fi
+              done < <(find "$EXTRACT_DIR" -mindepth "$depth" -maxdepth "$depth" \
+                \( -name "build.gradle" -o -name "build.gradle.kts" \) \
+                -not -path "*/build/*" -type f 2>/dev/null)
             done
           fi
-
-          # Priority 3 — Flutter / RN / Ionic
+          
+          # الأولوية 3: أي build.gradle
           if [ -z "$PROJECT_ROOT" ]; then
-            for m in pubspec.yaml package.json config.xml; do
-              FOUND=$(find_marker "$m")
-              [ -n "$FOUND" ] && PROJECT_ROOT=$(dirname "$FOUND") && break
+            for depth in $(seq 0 5); do
+              FOUND=$(find "$EXTRACT_DIR" -mindepth "$depth" -maxdepth "$depth" \
+                \( -name "build.gradle" -o -name "build.gradle.kts" \) \
+                -not -path "*/build/*" -type f 2>/dev/null | head -1)
+              if [ -n "$FOUND" ]; then
+                PROJECT_ROOT=$(dirname "$FOUND")
+                echo "  ✅ عثر على build.gradle في العمق $depth"
+                break
+              fi
             done
           fi
-
+          
           if [ -z "$PROJECT_ROOT" ]; then
-            echo "❌ Cannot detect any project structure inside ZIP"
-            find "$EXTRACT_DIR" -maxdepth 3 | head -60
+            echo "❌ خطأ: لم يتم العثور على مشروع Gradle داخل ZIP!"
+            echo ""
+            echo "📁 محتويات ZIP:"
+            find "$EXTRACT_DIR" -maxdepth 4 -type f | head -40
+            rm -rf "$EXTRACT_DIR"
             exit 1
           fi
-
-          echo "✅ Project root: $PROJECT_ROOT"
-
-          # ---------- move project to workspace ----------
-          shopt -s dotglob
-          find . -maxdepth 1 ! -name '.' ! -name '.git' ! -name '.github' -exec rm -rf {} +
-          cp -a "$PROJECT_ROOT"/. ./
-          rm -f ./*.zip
-          rm -rf "$EXTRACT_DIR"
-
-          echo "extracted=true" >> "$GITHUB_OUTPUT"
+          
+          echo "📁 جذر المشروع: $PROJECT_ROOT"
+          
+          # ── نسخ ملفات المشروع ──
+          GITHUB_BACKUP=$(mktemp -d)
+          cp -r .github "$GITHUB_BACKUP/" 2>/dev/null || true
+          
+          # حذف كل شيء ما عدا .git
+          find . -maxdepth 1 -not -name '.' -not -name '.git' -exec rm -rf {} + 2>/dev/null || true
+          
+          # نسخ ملفات المشروع
+          shopt -s dotglob nullglob
+          cp -rf "$PROJECT_ROOT"/* ./ 2>/dev/null || true
+          find "$PROJECT_ROOT" -maxdepth 1 -name ".*" \
+            -not -name "." -not -name ".." -not -name ".git" \
+            -exec cp -rf {} ./ \; 2>/dev/null || true
+          shopt -u dotglob nullglob
+          
+          # استعادة مجلد workflow
+          cp -rf "$GITHUB_BACKUP/.github" ./ 2>/dev/null || true
+          
+          # تنظيف
+          rm -rf "$EXTRACT_DIR" "$GITHUB_BACKUP"
+          
           echo ""
-          echo "📂 Extracted project structure (top 3 levels):"
-          find . -maxdepth 3 -not -path './.git/*' -not -path './.github/*' | head -60
+          echo "📋 هيكل المشروع بعد الاستخراج:"
+          find . -maxdepth 2 -not -path './.git/*' -not -path './.git' \
+            -not -path './build/*' | sort | head -50
+          echo ""
 
       # ┌─────────────────────────────────────────────┐
-      # │  3. PROJECT DETECTION - كشف نوع المشروع     │
+      # │  🔍 STEP 3: Auto-Detect Configuration       │
       # └─────────────────────────────────────────────┘
-      - name: "\U0001F50D Detect Project Type & Config"
+      - name: 🔍 Auto-Detect Project Configuration
         id: config
         run: |
           set -eo pipefail
-
-          echo "══════════════════════════════════════════"
-          echo "🔍 AUTO-DETECTING PROJECT CONFIGURATION"
-          echo "══════════════════════════════════════════"
-
-          # ─── helpers ───
-          has_file()  { find . -maxdepth 4 -name "$1" -not -path './.git/*' -type f 2>/dev/null | head -1; }
-          grep_src()  { grep -rql "$1" --include="*.gradle" --include="*.kts" . 2>/dev/null | head -1; }
-
-          # ═══ Project Type ═══
-          TYPE="unknown"
-          FRAMEWORK=""
-
-          # Android Gradle
-          if [ -n "$(has_file 'settings.gradle')" ] || [ -n "$(has_file 'settings.gradle.kts')" ] \
-             || [ -n "$(has_file 'build.gradle')" ] || [ -n "$(has_file 'build.gradle.kts')" ]; then
-            if [ -n "$(grep_src 'com\.android\.application')" ] || [ -n "$(grep_src 'com\.android\.library')" ]; then
-              TYPE="android"
-              # Detect sub-framework
-              if [ -n "$(grep_src 'com\.android\.application')" ]; then
-                [ -n "$(grep_src 'kotlin-android\|org\.jetbrains\.kotlin')" ] && FRAMEWORK="kotlin" || FRAMEWORK="java"
-              fi
-              # Compose?
-              [ -n "$(grep_src 'compose')" ] && FRAMEWORK="${FRAMEWORK}-compose"
-            fi
-          fi
-
-          # Flutter
-          if [ -n "$(has_file 'pubspec.yaml')" ]; then
-            PUB=$(has_file 'pubspec.yaml')
-            if grep -q 'flutter:' "$PUB" 2>/dev/null; then
-              TYPE="flutter"
-              FRAMEWORK="flutter"
-            fi
-          fi
-
-          # React Native
-          if [ "$TYPE" = "unknown" ] && [ -n "$(has_file 'package.json')" ]; then
-            PKG=$(has_file 'package.json')
-            if grep -q '"react-native"' "$PKG" 2>/dev/null; then
-              TYPE="react-native"
-              FRAMEWORK="react-native"
-            fi
-          fi
-
-          # Ionic / Capacitor
-          if [ "$TYPE" = "unknown" ] && [ -n "$(has_file 'package.json')" ]; then
-            PKG=$(has_file 'package.json')
-            if grep -q '"@capacitor/core"\|"@ionic"' "$PKG" 2>/dev/null; then
-              TYPE="ionic"
-              FRAMEWORK="ionic-capacitor"
-            fi
-          fi
-
-          # .NET MAUI / Xamarin
-          if [ "$TYPE" = "unknown" ]; then
-            if [ -n "$(has_file '*.csproj')" ]; then
-              CSPROJ=$(has_file '*.csproj')
-              if grep -q 'Xamarin\|Maui\|Android' "$CSPROJ" 2>/dev/null; then
-                TYPE="dotnet"
-                FRAMEWORK="maui"
-              fi
-            fi
-          fi
-
-          echo "📱 Project Type : $TYPE"
-          echo "🔧 Framework    : $FRAMEWORK"
-          echo "type=$TYPE"           >> "$GITHUB_OUTPUT"
-          echo "framework=$FRAMEWORK" >> "$GITHUB_OUTPUT"
-
-          # ═══ Java Version ═══
-          INPUT_JAVA="${{ github.event.inputs.java_version || 'auto' }}"
-          JAVA_VER="17"
-
-          if [ "$INPUT_JAVA" = "auto" ]; then
-            # from gradle-wrapper
-            if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
-              GV=$(grep -oP 'gradle-\K[0-9]+' gradle/wrapper/gradle-wrapper.properties 2>/dev/null || echo 8)
-              [ "$GV" -le 4 ] && JAVA_VER="8"
-              [ "$GV" -ge 5 ] && [ "$GV" -le 6 ] && JAVA_VER="11"
-              [ "$GV" -ge 7 ] && JAVA_VER="17"
-            fi
-            # explicit jvmTarget
-            if grep -rq 'jvmTarget.*21\|VERSION_21' --include='*.gradle' --include='*.kts' . 2>/dev/null; then
-              JAVA_VER="21"
-            fi
-          else
-            JAVA_VER="$INPUT_JAVA"
-          fi
-
-          echo "☕ Java Version : $JAVA_VER"
-          echo "java_version=$JAVA_VER" >> "$GITHUB_OUTPUT"
-
-          # ═══ Android SDK Versions ═══
-          extract_ver() {
-            grep -roP "$1"'\s*[=(]\s*\K[0-9]+' --include='*.gradle' --include='*.kts' . 2>/dev/null \
-              | sort -n | tail -1
+          
+          echo "╔══════════════════════════════════════════╗"
+          echo "║  🔍 Auto-Detection Engine                ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+          
+          # ══ Helper Function ══
+          # البحث في ملفات Gradle مع تجاهل مجلدات البناء
+          ggrep() {
+            grep -rh "$@" \
+              --include="*.gradle" \
+              --include="*.gradle.kts" \
+              --exclude-dir=build \
+              --exclude-dir=.gradle \
+              --exclude-dir=.gradle-cache \
+              . 2>/dev/null || true
           }
-
-          COMPILE_SDK=$(extract_ver 'compileSdk(?:Version)?')
-          TARGET_SDK=$(extract_ver  'targetSdk(?:Version)?')
-          MIN_SDK=$(extract_ver     'minSdk(?:Version)?')
-          BUILD_TOOLS=$(grep -roP 'buildToolsVersion\s*[=(]\s*["'\'']\K[0-9.]+' \
-                        --include='*.gradle' --include='*.kts' . 2>/dev/null | head -1)
-
-          [ -z "$COMPILE_SDK" ]  && COMPILE_SDK="34"
-          [ -z "$TARGET_SDK" ]   && TARGET_SDK="$COMPILE_SDK"
-          [ -z "$MIN_SDK" ]      && MIN_SDK="21"
-          [ -z "$BUILD_TOOLS" ]  && BUILD_TOOLS="${COMPILE_SDK}.0.0"
-
-          echo "📱 compileSdk   : $COMPILE_SDK"
-          echo "📱 targetSdk    : $TARGET_SDK"
-          echo "📱 minSdk       : $MIN_SDK"
-          echo "📱 buildTools   : $BUILD_TOOLS"
-
-          echo "compile_sdk=$COMPILE_SDK"   >> "$GITHUB_OUTPUT"
-          echo "target_sdk=$TARGET_SDK"     >> "$GITHUB_OUTPUT"
-          echo "min_sdk=$MIN_SDK"           >> "$GITHUB_OUTPUT"
-          echo "build_tools=$BUILD_TOOLS"   >> "$GITHUB_OUTPUT"
-
-          # ═══ App Module Detection ═══
-          APP_MODULE="app"
-
-          # Find module with com.android.application plugin
-          while IFS= read -r gf; do
-            if grep -q 'com\.android\.application' "$gf" 2>/dev/null; then
-              MOD_DIR=$(dirname "$gf")
-              if [ "$MOD_DIR" = "." ]; then
-                APP_MODULE="."
-              else
-                APP_MODULE=$(echo "$MOD_DIR" | sed 's|/|:|g; s|^\./||')
-              fi
-              break
+          
+          # ══════════════════════════════
+          # 🔤 كشف لغة البرمجة
+          # ══════════════════════════════
+          KT=$(find . -name "*.kt" -not -path "*/build/*" -not -path "*/.gradle/*" -type f 2>/dev/null | wc -l)
+          JV=$(find . -name "*.java" -not -path "*/build/*" -not -path "*/.gradle/*" -not -path "*/generated/*" -type f 2>/dev/null | wc -l)
+          
+          if [ "$KT" -gt 0 ] && [ "$JV" -gt 0 ]; then
+            LANG="kotlin+java"
+            echo "🟣🟠 لغة المشروع: Kotlin ($KT ملف) + Java ($JV ملف)"
+          elif [ "$KT" -gt 0 ]; then
+            LANG="kotlin"
+            echo "🟣 لغة المشروع: Kotlin ($KT ملف)"
+          elif [ "$JV" -gt 0 ]; then
+            LANG="java"
+            echo "🟠 لغة المشروع: Java ($JV ملف)"
+          else
+            LANG="unknown"
+            echo "⚪ لم يتم كشف ملفات مصدرية"
+          fi
+          echo "language=$LANG" >> "$GITHUB_OUTPUT"
+          
+          # ══════════════════════════════
+          # 📝 كشف نوع DSL
+          # ══════════════════════════════
+          if [ -f "build.gradle.kts" ] || [ -f "settings.gradle.kts" ]; then
+            echo "dsl=kotlin" >> "$GITHUB_OUTPUT"
+            echo "📝 نوع DSL: Kotlin Script (.kts)"
+          else
+            echo "dsl=groovy" >> "$GITHUB_OUTPUT"
+            echo "📝 نوع DSL: Groovy"
+          fi
+          
+          # ══════════════════════════════
+          # ☕ كشف إصدار JDK
+          # ══════════════════════════════
+          INPUT_JDK="${{ github.event.inputs.java_version }}"
+          
+          if [ -n "$INPUT_JDK" ] && [ "$INPUT_JDK" != "auto" ]; then
+            JDK="$INPUT_JDK"
+            echo "☕ إصدار JDK (يدوي): $JDK"
+          else
+            JDK="17"  # الافتراضي
+            
+            # البحث في ملفات Gradle
+            GRADLE_CONTENT=$(ggrep "")
+            
+            if echo "$GRADLE_CONTENT" | grep -qP "VERSION_21|jvmTarget.*[\"']21[\"']|sourceCompatibility.*21|JavaLanguageVersion\.of\(21\)"; then
+              JDK="21"
+            elif echo "$GRADLE_CONTENT" | grep -qP "VERSION_17|jvmTarget.*[\"']17[\"']|sourceCompatibility.*17|JavaLanguageVersion\.of\(17\)"; then
+              JDK="17"
+            elif echo "$GRADLE_CONTENT" | grep -qP "VERSION_11|jvmTarget.*[\"']11[\"']|sourceCompatibility.*11|JavaLanguageVersion\.of\(11\)"; then
+              JDK="11"
+            elif echo "$GRADLE_CONTENT" | grep -qP "VERSION_1_8|jvmTarget.*[\"']1\.8[\"']|jvmTarget.*[\"']8[\"']|sourceCompatibility.*1\.8|JavaLanguageVersion\.of\(8\)"; then
+              JDK="17"  # JDK 17 يدعم target 1.8
             fi
-          done < <(find . -maxdepth 3 -name "build.gradle" -o -name "build.gradle.kts" 2>/dev/null | sort)
-
-          echo "📦 App Module   : $APP_MODULE"
-          echo "app_module=$APP_MODULE" >> "$GITHUB_OUTPUT"
-
-          # ═══ NDK / CMake ═══
-          NEEDS_NDK="false"
-          NDK_VER=""
-          NEEDS_CMAKE="false"
-          CMAKE_VER=""
-
-          if grep -rq 'ndkVersion\|externalNativeBuild\|ndk-build' --include='*.gradle' --include='*.kts' . 2>/dev/null \
-             || [ -d "app/src/main/jni" ] || [ -d "app/src/main/cpp" ]; then
-            NEEDS_NDK="true"
-            NDK_VER=$(grep -roP 'ndkVersion\s*[=(]\s*["'\'']\K[0-9.]+' --include='*.gradle' --include='*.kts' . 2>/dev/null | head -1)
-            [ -z "$NDK_VER" ] && NDK_VER="26.1.10909125"
+            
+            echo "☕ إصدار JDK (تلقائي): $JDK"
           fi
-
-          if grep -rq 'externalNativeBuild\s*\{[^}]*cmake\|cmake\s*\{' --include='*.gradle' --include='*.kts' . 2>/dev/null; then
-            NEEDS_CMAKE="true"
-            CMAKE_VER=$(grep -roP 'cmake[^}]*version\s*["'\'']\K[0-9.]+' --include='*.gradle' --include='*.kts' . 2>/dev/null | head -1)
-            [ -z "$CMAKE_VER" ] && CMAKE_VER="3.22.1"
+          echo "jdk_version=$JDK" >> "$GITHUB_OUTPUT"
+          
+          # ══════════════════════════════
+          # 🤖 كشف إصدارات SDK
+          # ══════════════════════════════
+          
+          # compileSdk
+          COMPILE_SDK=""
+          # أولاً: البحث في Version Catalog
+          if [ -f "gradle/libs.versions.toml" ]; then
+            COMPILE_SDK=$(grep -iP "^\s*(compileSdk|compile-sdk|android-compile)" \
+              gradle/libs.versions.toml 2>/dev/null | grep -oP '\d+' | head -1 || true)
           fi
-
-          echo "needs_ndk=$NEEDS_NDK"       >> "$GITHUB_OUTPUT"
-          echo "ndk_version=$NDK_VER"       >> "$GITHUB_OUTPUT"
-          echo "needs_cmake=$NEEDS_CMAKE"   >> "$GITHUB_OUTPUT"
-          echo "cmake_version=$CMAKE_VER"   >> "$GITHUB_OUTPUT"
-
-          # ═══ Build Flavors ═══
-          FLAVORS=""
-          FLAVORS=$(grep -roP 'productFlavors\s*\{[^}]*' --include='*.gradle' --include='*.kts' . 2>/dev/null \
-                    | grep -oP '^\s*\K\w+(?=\s*\{)' | tr '\n' ',' | sed 's/,$//' || true)
-          echo "flavors=$FLAVORS" >> "$GITHUB_OUTPUT"
-          [ -n "$FLAVORS" ] && echo "🎨 Flavors      : $FLAVORS"
-
-          # ═══ Build Type ═══
-          BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
-          echo "build_type=$BUILD_TYPE" >> "$GITHUB_OUTPUT"
-
+          # ثانياً: البحث في Gradle files
+          if [ -z "$COMPILE_SDK" ]; then
+            COMPILE_SDK=$(ggrep "compileSdk\|compileSdkVersion" | \
+              grep -v "//" | grep -v "/*" | grep -oP '\d{2,}' | sort -rn | head -1)
+          fi
+          [ -z "$COMPILE_SDK" ] && COMPILE_SDK="35"
+          
+          # targetSdk
+          TARGET_SDK=$(ggrep "targetSdk\b\|targetSdkVersion" | \
+            grep -v "//" | grep -oP '\d{2,}' | sort -rn | head -1)
+          [ -z "$TARGET_SDK" ] && TARGET_SDK="$COMPILE_SDK"
+          
+          # minSdk
+          MIN_SDK=$(ggrep "minSdk\b\|minSdkVersion" | \
+            grep -v "//" | grep -oP '\d+' | sort -n | head -1)
+          [ -z "$MIN_SDK" ] && MIN_SDK="21"
+          
+          # buildToolsVersion
+          BUILD_TOOLS=$(ggrep "buildToolsVersion" | grep -oP '"[^"]*"' | tr -d '"' | head -1)
+          
+          echo "compile_sdk=$COMPILE_SDK" >> "$GITHUB_OUTPUT"
+          echo "target_sdk=$TARGET_SDK" >> "$GITHUB_OUTPUT"
+          echo "min_sdk=$MIN_SDK" >> "$GITHUB_OUTPUT"
+          echo "build_tools=$BUILD_TOOLS" >> "$GITHUB_OUTPUT"
+          
+          echo "🤖 Compile SDK: $COMPILE_SDK"
+          echo "🎯 Target SDK:  $TARGET_SDK"
+          echo "📱 Min SDK:     $MIN_SDK"
+          [ -n "$BUILD_TOOLS" ] && echo "🔧 Build Tools: $BUILD_TOOLS" || echo "🔧 Build Tools: تلقائي"
+          
+          # ══════════════════════════════
+          # 🔧 كشف NDK و CMake
+          # ══════════════════════════════
+          NDK_VER=$(ggrep "ndkVersion" | grep -oP '"[^"]*"' | tr -d '"' | head -1)
+          CMAKE_VER=$(ggrep "cmake" | grep -oP 'version\s*"?\K[0-9][0-9.]*' | head -1)
+          
+          echo "ndk_version=$NDK_VER" >> "$GITHUB_OUTPUT"
+          echo "cmake_version=$CMAKE_VER" >> "$GITHUB_OUTPUT"
+          
+          [ -n "$NDK_VER" ] && echo "🔧 NDK:   $NDK_VER" || echo "🔧 NDK:   غير مستخدم"
+          [ -n "$CMAKE_VER" ] && echo "🔧 CMake: $CMAKE_VER" || echo "🔧 CMake: غير مستخدم"
+          
+          # ══════════════════════════════
+          # 📦 كشف إصدار Gradle
+          # ══════════════════════════════
+          GRADLE_VER=""
+          if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+            GRADLE_VER=$(grep "distributionUrl" gradle/wrapper/gradle-wrapper.properties 2>/dev/null | \
+              grep -oP 'gradle-\K[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
+          fi
+          [ -z "$GRADLE_VER" ] && GRADLE_VER="8.7"
+          echo "gradle_version=$GRADLE_VER" >> "$GITHUB_OUTPUT"
+          echo "📦 Gradle: $GRADLE_VER"
+          
           echo ""
           echo "══════════════════════════════════════════"
-          echo "✅ DETECTION COMPLETE"
-          echo "══════════════════════════════════════════"
 
       # ┌─────────────────────────────────────────────┐
-      # │  4. SETUP JDK                                │
+      # │  ☕ STEP 4: Setup JDK                        │
       # └─────────────────────────────────────────────┘
-      - name: "\u2615 Set up JDK ${{ steps.config.outputs.java_version }}"
+      - name: ☕ Setup JDK ${{ steps.config.outputs.jdk_version }}
         uses: actions/setup-java@v4
         with:
-          java-version: ${{ steps.config.outputs.java_version }}
-          distribution: "temurin"
+          java-version: ${{ steps.config.outputs.jdk_version }}
+          distribution: 'temurin'
 
       # ┌─────────────────────────────────────────────┐
-      # │  5. SETUP ANDROID SDK                        │
+      # │  🤖 STEP 5: Setup Android SDK               │
       # └─────────────────────────────────────────────┘
-      - name: "\U0001F4F1 Setup Android SDK"
+      - name: 🤖 Setup Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          accept-android-sdk-licenses: true
 
-      - name: "\U0001F4F1 Install SDK Components"
+      - name: 📜 Accept Licenses & Install SDK Components
         run: |
-          set -eo pipefail
-
-          CS="${{ steps.config.outputs.compile_sdk }}"
-          BT="${{ steps.config.outputs.build_tools }}"
-
-          yes | sdkmanager --licenses 2>/dev/null || true
-
-          PACKAGES=(
-            "platforms;android-${CS}"
-            "build-tools;${BT}"
-            "platform-tools"
-          )
-
-          # Extra platforms referenced in project
-          for sdk in 35 34 33 32 31 30 29 28 27 26 25 24 23; do
-            if grep -rq "android-${sdk}\|compileSdk.*${sdk}\|targetSdk.*${sdk}" \
-               --include='*.gradle' --include='*.kts' . 2>/dev/null; then
-              PACKAGES+=("platforms;android-${sdk}")
-            fi
-          done
-
-          # NDK
-          if [ "${{ steps.config.outputs.needs_ndk }}" = "true" ]; then
-            PACKAGES+=("ndk;${{ steps.config.outputs.ndk_version }}")
+          echo "📜 قبول التراخيص..."
+          mkdir -p "$ANDROID_HOME/licenses"
+          
+          # كتابة جميع التراخيص المطلوبة
+          cat > "$ANDROID_HOME/licenses/android-sdk-license" << 'LICENSES'
+          8933bad161af4178b1185d1a37fbf41ea5269c55
+          d56f5187479451eabf01fb78af6dfcb131a6481e
+          24333f8a63b6825ea9c5514f83c2829b004d1fee
+          LICENSES
+          
+          echo "84831b9409646a918e30573bab4c9c91346d8abd" > \
+            "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          echo "d975f751698a77b662f1254ddbeed3901e976f5a" > \
+            "$ANDROID_HOME/licenses/intel-android-extra-license"
+          
+          yes 2>/dev/null | sdkmanager --licenses > /dev/null 2>&1 || true
+          
+          echo ""
+          echo "📦 تثبيت مكونات SDK المطلوبة..."
+          
+          COMPILE_SDK="${{ steps.config.outputs.compile_sdk }}"
+          TARGET_SDK="${{ steps.config.outputs.target_sdk }}"
+          BUILD_TOOLS="${{ steps.config.outputs.build_tools }}"
+          NDK_VER="${{ steps.config.outputs.ndk_version }}"
+          CMAKE_VER="${{ steps.config.outputs.cmake_version }}"
+          
+          # تثبيت المنصات
+          echo "  📦 platforms;android-${COMPILE_SDK}"
+          sdkmanager "platforms;android-${COMPILE_SDK}" > /dev/null 2>&1 || true
+          
+          if [ "$TARGET_SDK" != "$COMPILE_SDK" ]; then
+            echo "  📦 platforms;android-${TARGET_SDK}"
+            sdkmanager "platforms;android-${TARGET_SDK}" > /dev/null 2>&1 || true
           fi
-
-          # CMake
-          if [ "${{ steps.config.outputs.needs_cmake }}" = "true" ]; then
-            PACKAGES+=("cmake;${{ steps.config.outputs.cmake_version }}")
-          fi
-
-          echo "📦 Installing: ${PACKAGES[*]}"
-          sdkmanager "${PACKAGES[@]}" 2>/dev/null || {
-            echo "⚠️  Batch install failed — installing one by one..."
-            for pkg in "${PACKAGES[@]}"; do
-              sdkmanager "$pkg" 2>/dev/null || echo "   ⚠️  Failed: $pkg"
-            done
-          }
-
-          echo "✅ SDK components ready"
-
-      # ┌─────────────────────────────────────────────┐
-      # │  6. SETUP FLUTTER (if needed)                │
-      # └─────────────────────────────────────────────┘
-      - name: "\U0001F426 Setup Flutter"
-        if: steps.config.outputs.type == 'flutter'
-        uses: subosito/flutter-action@v2
-        with:
-          channel: "stable"
-          cache: true
-
-      - name: "\U0001F426 Flutter Doctor"
-        if: steps.config.outputs.type == 'flutter'
-        run: flutter doctor -v
-
-      # ┌─────────────────────────────────────────────┐
-      # │  7. SETUP NODE.JS (if needed)                │
-      # └─────────────────────────────────────────────┘
-      - name: "\U0001F4E6 Setup Node.js"
-        if: >-
-          steps.config.outputs.type == 'react-native' ||
-          steps.config.outputs.type == 'ionic'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: "\U0001F4E6 Install Node Dependencies"
-        if: >-
-          steps.config.outputs.type == 'react-native' ||
-          steps.config.outputs.type == 'ionic'
-        run: |
-          if [ -f "yarn.lock" ]; then
-            npm i -g yarn && yarn install --frozen-lockfile 2>/dev/null || yarn install
-          elif [ -f "pnpm-lock.yaml" ]; then
-            npm i -g pnpm && pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+          
+          # أدوات المنصة
+          echo "  📦 platform-tools"
+          sdkmanager "platform-tools" > /dev/null 2>&1 || true
+          
+          # أدوات البناء
+          if [ -n "$BUILD_TOOLS" ]; then
+            echo "  📦 build-tools;${BUILD_TOOLS}"
+            sdkmanager "build-tools;${BUILD_TOOLS}" > /dev/null 2>&1 || true
           else
-            npm ci 2>/dev/null || npm install
+            # تثبيت أحدث إصدار متوافق
+            LATEST_BT=$(sdkmanager --list 2>/dev/null | grep -oP "build-tools;\S+" | tail -1)
+            if [ -n "$LATEST_BT" ]; then
+              echo "  📦 $LATEST_BT (أحدث إصدار)"
+              sdkmanager "$LATEST_BT" > /dev/null 2>&1 || true
+            fi
           fi
+          
+          # NDK
+          if [ -n "$NDK_VER" ]; then
+            echo "  📦 ndk;${NDK_VER}"
+            sdkmanager "ndk;${NDK_VER}" > /dev/null 2>&1 || true
+          fi
+          
+          # CMake
+          if [ -n "$CMAKE_VER" ]; then
+            echo "  📦 cmake;${CMAKE_VER}"
+            sdkmanager "cmake;${CMAKE_VER}" > /dev/null 2>&1 || true
+          fi
+          
+          echo ""
+          echo "✅ تم تثبيت جميع مكونات SDK"
 
       # ┌─────────────────────────────────────────────┐
-      # │  8. GRADLE WRAPPER FIX                       │
+      # │  📝 STEP 6: Configure Project               │
       # └─────────────────────────────────────────────┘
-      - name: "\U0001F527 Fix & Setup Gradle Wrapper"
-        if: steps.config.outputs.type != 'flutter' && steps.config.outputs.type != 'dotnet'
+      - name: 📝 Configure Project
         run: |
-          set -eo pipefail
+          # إنشاء local.properties
+          {
+            echo "sdk.dir=$ANDROID_HOME"
+            if [ -n "${{ steps.config.outputs.ndk_version }}" ]; then
+              echo "ndk.dir=$ANDROID_HOME/ndk/${{ steps.config.outputs.ndk_version }}"
+            fi
+          } > local.properties
+          
+          echo "✅ تم إنشاء local.properties"
 
-          echo "🔧 Fixing Gradle environment..."
-
-          # ── local.properties ──
-          echo "sdk.dir=${ANDROID_HOME}" > local.properties
-          # Also for react-native / ionic sub-project
-          [ -d "android" ] && echo "sdk.dir=${ANDROID_HOME}" > android/local.properties
-
-          # ── Determine desired Gradle version ──
-          GRADLE_VER="8.7"
-          if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
-            DET=$(grep -oP 'gradle-\K[0-9]+\.[0-9]+(\.[0-9]+)?' \
-                  gradle/wrapper/gradle-wrapper.properties 2>/dev/null || true)
-            [ -n "$DET" ] && GRADLE_VER="$DET"
-          fi
-
-          # ── Ensure wrapper exists ──
-          if [ ! -f "gradlew" ] || [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "⚠️  Gradle wrapper missing — generating for v${GRADLE_VER}..."
-            mkdir -p gradle/wrapper
-
-            # Download wrapper jar from Gradle GitHub
-            WRAPPER_JAR_URL="https://github.com/gradle/gradle/raw/v${GRADLE_VER}/gradle/wrapper/gradle-wrapper.jar"
-            curl -sL "$WRAPPER_JAR_URL" -o gradle/wrapper/gradle-wrapper.jar 2>/dev/null || {
-              echo "   Downloading full Gradle to regenerate wrapper..."
+      # ┌─────────────────────────────────────────────┐
+      # │  🔧 STEP 7: Setup Gradle                    │
+      # └─────────────────────────────────────────────┘
+      - name: 🔧 Setup Gradle Wrapper
+        run: |
+          echo "🔧 إعداد Gradle Wrapper..."
+          
+          GRADLE_VER="${{ steps.config.outputs.gradle_version }}"
+          
+          # ── الحالة 1: gradlew موجود ──
+          if [ -f "gradlew" ]; then
+            chmod +x gradlew
+            echo "✅ gradlew موجود وجاهز"
+            
+            # التحقق من وجود wrapper jar
+            if [ -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+              echo "✅ gradle-wrapper.jar موجود"
+            else
+              echo "⚠️ gradle-wrapper.jar مفقود - جاري الاسترداد..."
+              mkdir -p gradle/wrapper
+              
+              # تحميل Gradle وإعادة إنشاء wrapper
               wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" \
-                   -O /tmp/gradle-dist.zip 2>/dev/null || {
+                -O /tmp/gradle-dl.zip || {
+                echo "  ⚠️ فشل التحميل، محاولة الإصدار 8.7..."
                 GRADLE_VER="8.7"
                 wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" \
-                     -O /tmp/gradle-dist.zip
+                  -O /tmp/gradle-dl.zip
               }
-              unzip -q /tmp/gradle-dist.zip -d /tmp/
-              /tmp/gradle-${GRADLE_VER}/bin/gradle wrapper --gradle-version="${GRADLE_VER}"
-              rm -rf /tmp/gradle*
+              
+              unzip -q /tmp/gradle-dl.zip -d /tmp/gradle-install
+              /tmp/gradle-install/gradle-${GRADLE_VER}/bin/gradle wrapper \
+                --gradle-version="${GRADLE_VER}" 2>/dev/null || true
+              rm -rf /tmp/gradle-dl.zip /tmp/gradle-install
+              chmod +x gradlew
+              echo "✅ تم استرداد Gradle Wrapper"
+            fi
+          
+          # ── الحالة 2: gradlew غير موجود ──
+          else
+            echo "⚠️ gradlew غير موجود - جاري الإنشاء..."
+            
+            wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" \
+              -O /tmp/gradle-dl.zip || {
+              GRADLE_VER="8.7"
+              wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" \
+                -O /tmp/gradle-dl.zip
             }
-
-            # Create wrapper properties if missing
-            if [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
-              cat > gradle/wrapper/gradle-wrapper.properties << GWPEOF
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip
-          networkTimeout=10000
-          validateDistributionUrl=true
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-          GWPEOF
-            fi
-
-            # Create gradlew script if missing
-            if [ ! -f "gradlew" ]; then
-              cat > gradlew << 'GWEOF'
-          #!/bin/sh
-          exec java -jar "$(dirname "$0")/gradle/wrapper/gradle-wrapper.jar" "$@"
-          GWEOF
-            fi
+            
+            unzip -q /tmp/gradle-dl.zip -d /tmp/gradle-install
+            /tmp/gradle-install/gradle-${GRADLE_VER}/bin/gradle wrapper \
+              --gradle-version="${GRADLE_VER}"
+            rm -rf /tmp/gradle-dl.zip /tmp/gradle-install
+            chmod +x gradlew
+            echo "✅ تم إنشاء Gradle Wrapper (v${GRADLE_VER})"
           fi
-
-          chmod +x gradlew 2>/dev/null || true
-          [ -d "android" ] && chmod +x android/gradlew 2>/dev/null || true
-
-          # ── gradle.properties — ensure sane defaults ──
-          GP="gradle.properties"
-          touch "$GP"
-          ensure_prop() {
-            grep -q "^${1}=" "$GP" 2>/dev/null || echo "${1}=${2}" >> "$GP"
-          }
-          ensure_prop "org.gradle.jvmargs"           "-Xmx4g -XX:+HeapDumpOnOutOfMemoryError -XX:MaxMetaspaceSize=1g"
-          ensure_prop "org.gradle.parallel"           "true"
-          ensure_prop "org.gradle.caching"            "true"
-          ensure_prop "org.gradle.configureondemand"  "true"
-          ensure_prop "android.useAndroidX"           "true"
-          ensure_prop "android.nonTransitiveRClass"   "true"
-
-          echo "✅ Gradle environment ready  (v${GRADLE_VER})"
+          
+          echo ""
+          echo "📋 التحقق النهائي:"
+          [ -f "gradlew" ]                              && echo "  ✅ gradlew" || echo "  ❌ gradlew"
+          [ -f "gradle/wrapper/gradle-wrapper.jar" ]    && echo "  ✅ wrapper.jar" || echo "  ❌ wrapper.jar"
+          [ -f "gradle/wrapper/gradle-wrapper.properties" ] && echo "  ✅ wrapper.properties" || echo "  ❌ wrapper.properties"
 
       # ┌─────────────────────────────────────────────┐
-      # │  9. CACHE DEPENDENCIES                       │
+      # │  💾 STEP 8: Cache Dependencies              │
       # └─────────────────────────────────────────────┘
-      - name: "\U0001F4BE Cache Gradle"
-        if: steps.config.outputs.type != 'flutter' && steps.config.outputs.type != 'dotnet'
+      - name: 💾 Cache Gradle Dependencies
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
+            ~/.gradle/native
             ~/.android/build-cache
-            .gradle
-          key: gradle-${{ runner.os }}-${{ steps.config.outputs.java_version }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          key: gradle-${{ runner.os }}-${{ steps.config.outputs.jdk_version }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
           restore-keys: |
-            gradle-${{ runner.os }}-${{ steps.config.outputs.java_version }}-
+            gradle-${{ runner.os }}-${{ steps.config.outputs.jdk_version }}-
             gradle-${{ runner.os }}-
 
-      - name: "\U0001F4BE Cache Flutter"
-        if: steps.config.outputs.type == 'flutter'
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.pub-cache
-            .dart_tool
-          key: flutter-${{ runner.os }}-${{ hashFiles('pubspec.lock', 'pubspec.yaml') }}
-          restore-keys: flutter-${{ runner.os }}-
-
       # ┌─────────────────────────────────────────────┐
-      # │  10. AUTO-FIX COMMON ISSUES                  │
+      # │  📥 STEP 9: Resolve Dependencies            │
       # └─────────────────────────────────────────────┘
-      - name: "\U0001F527 Auto-Fix Common Build Issues"
-        if: steps.config.outputs.type == 'android'
+      - name: 📥 Resolve & Download Dependencies
         run: |
-          set -eo pipefail
-
-          echo "🔧 Scanning & fixing common issues..."
-
-          # ── Fix 1: Missing google-services.json ──
-          for gf in $(find . -maxdepth 3 -name "build.gradle" -o -name "build.gradle.kts" 2>/dev/null); do
-            DIR=$(dirname "$gf")
-            if grep -q 'com\.google\.gms\.google-services\|google-services' "$gf" 2>/dev/null; then
-              if [ ! -f "$DIR/google-services.json" ]; then
-                echo "⚠️  Creating placeholder google-services.json in $DIR"
-                # Detect package name
-                PKG="com.example.app"
-                MANIFEST="$DIR/src/main/AndroidManifest.xml"
-                [ -f "$MANIFEST" ] && PKG=$(grep -oP 'package="\K[^"]+' "$MANIFEST" 2>/dev/null || echo "com.example.app")
-
-                cat > "$DIR/google-services.json" << GSEOF
-          {"project_info":{"project_number":"000000000000","project_id":"placeholder","storage_bucket":"placeholder.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:000000000000:android:0000000000000000","android_client_info":{"package_name":"${PKG}"}},"api_key":[{"current_key":"AIzaSyPlaceholder"}]}],"configuration_version":"1"}
-          GSEOF
-              fi
-            fi
-          done
-
-          # ── Fix 2: Missing settings.gradle ──
-          if [ ! -f "settings.gradle" ] && [ ! -f "settings.gradle.kts" ]; then
-            if [ -f "app/build.gradle" ] || [ -f "app/build.gradle.kts" ]; then
-              echo "include ':app'" > settings.gradle
-              echo "⚠️  Created missing settings.gradle"
-            fi
-          fi
-
-          # ── Fix 3: Version catalog compatibility ──
-          if [ -f "gradle/libs.versions.toml" ]; then
-            # Ensure Gradle version supports version catalogs (7.0+)
-            echo "📦 Version catalog (libs.versions.toml) detected"
-          fi
-
-          # ── Fix 4: Missing AndroidManifest namespace ──
-          for gf in $(find . -maxdepth 3 -name "build.gradle" 2>/dev/null); do
-            if grep -q 'com\.android\.application\|com\.android\.library' "$gf" 2>/dev/null; then
-              if ! grep -q 'namespace' "$gf" 2>/dev/null; then
-                DIR=$(dirname "$gf")
-                MANIFEST="$DIR/src/main/AndroidManifest.xml"
-                if [ -f "$MANIFEST" ]; then
-                  PKG=$(grep -oP 'package="\K[^"]+' "$MANIFEST" 2>/dev/null || true)
-                  if [ -n "$PKG" ]; then
-                    # Check Gradle version — namespace required since AGP 8+
-                    AGP_VER=$(grep -roP 'com\.android\.tools\.build:gradle:\K[0-9]+' \
-                              --include='*.gradle' --include='*.kts' . 2>/dev/null | head -1 || echo "7")
-                    if [ "${AGP_VER:-7}" -ge 8 ]; then
-                      echo "⚠️  Adding namespace '$PKG' to $gf"
-                      sed -i "/android\s*{/a\\    namespace \"$PKG\"" "$gf" 2>/dev/null || true
-                    fi
-                  fi
-                fi
-              fi
-            fi
-          done
-
-          # ── Fix 5: Ensure repositories ──
-          for sf in settings.gradle settings.gradle.kts; do
-            if [ -f "$sf" ]; then
-              if ! grep -q 'mavenCentral\|google()' "$sf" 2>/dev/null; then
-                if [[ "$sf" == *.kts ]]; then
-                  cat >> "$sf" << 'REPOEOF'
-
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
-              repositories {
-                  google()
-                  mavenCentral()
-                  maven { url = uri("https://jitpack.io") }
-                  maven { url = uri("https://maven.google.com") }
-              }
-          }
-          REPOEOF
-                else
-                  cat >> "$sf" << 'REPOEOF'
-
-          dependencyResolutionManagement {
-              repositoriesMode = RepositoriesMode.PREFER_SETTINGS
-              repositories {
-                  google()
-                  mavenCentral()
-                  maven { url 'https://jitpack.io' }
-                  maven { url 'https://maven.google.com' }
-              }
-          }
-          REPOEOF
-                fi
-                echo "⚠️  Added repository declarations to $sf"
-              fi
-            fi
-          done
-
-          echo "✅ Common issues check complete"
-
-      # ┌─────────────────────────────────────────────┐
-      # │  11. BUILD — ANDROID NATIVE (Gradle)         │
-      # └─────────────────────────────────────────────┘
-      - name: "\U0001F528 Build Android APK (Gradle)"
-        if: steps.config.outputs.type == 'android'
-        run: |
-          set -eo pipefail
-
-          BUILD_TYPE="${{ steps.config.outputs.build_type }}"
-          APP="${{ steps.config.outputs.app_module }}"
-
-          echo "══════════════════════════════════════════"
-          echo "🔨 BUILDING ANDROID APK"
-          echo "   Module : ${APP}"
-          echo "   Type   : ${BUILD_TYPE}"
-          echo "══════════════════════════════════════════"
-
-          # Clean
-          [ "${{ github.event.inputs.clean_build }}" = "true" ] && ./gradlew clean 2>/dev/null || true
-
-          # Prefix for gradle task
-          [ "$APP" = "." ] && TASK_PREFIX="" || TASK_PREFIX=":${APP}:"
-
-          build_task() {
-            local TASK="$1"
-            local LABEL="$2"
-            echo ""
-            echo "▶ Running: ./gradlew ${TASK}"
-            echo ""
-
-            ./gradlew "${TASK}" \
-              --stacktrace \
-              --warning-mode all \
-              -Pandroid.injected.testOnly=false \
-              2>&1 | tee "/tmp/build_${LABEL}.log" && return 0
-
-            echo ""
-            echo "⚠️  Retrying with conservative settings..."
-            ./gradlew "${TASK}" \
-              --stacktrace \
-              --no-daemon \
-              --no-parallel \
-              -Pandroid.injected.testOnly=false \
-              -Dorg.gradle.workers.max=2 \
-              -Dorg.gradle.jvmargs="-Xmx4g" \
-              2>&1 | tee "/tmp/build_${LABEL}_retry.log"
-          }
-
-          case "$BUILD_TYPE" in
-            debug)
-              build_task "${TASK_PREFIX}assembleDebug" "debug"
-              ;;
-            release)
-              build_task "${TASK_PREFIX}assembleRelease" "release" || {
-                echo "⚠️  Release failed — falling back to debug"
-                build_task "${TASK_PREFIX}assembleDebug" "debug"
-              }
-              ;;
-            both)
-              build_task "${TASK_PREFIX}assembleDebug" "debug"
-              build_task "${TASK_PREFIX}assembleRelease" "release" || \
-                echo "⚠️  Release build failed (debug OK)"
-              ;;
-            *)
-              build_task "${TASK_PREFIX}assembleDebug" "debug"
-              ;;
-          esac
-
+          echo "📥 جاري تحميل المكتبات والاعتماديات..."
+          
+          # محاولة حل الاعتماديات أولاً
+          ./gradlew dependencies \
+            --no-daemon \
+            --stacktrace \
+            2>&1 | tail -20 || true
+          
           echo ""
-          echo "✅ Gradle build finished"
+          echo "✅ تم تحميل الاعتماديات"
 
       # ┌─────────────────────────────────────────────┐
-      # │  12. BUILD — FLUTTER                         │
+      # │  🏗️ STEP 10: Build APK                      │
       # └─────────────────────────────────────────────┘
-      - name: "\U0001F426 Build Flutter APK"
-        if: steps.config.outputs.type == 'flutter'
+      - name: 🏗️ Build Debug APK
+        if: >-
+          github.event_name != 'workflow_dispatch' || 
+          github.event.inputs.build_type == 'debug' || 
+          github.event.inputs.build_type == 'both'
         run: |
-          set -eo pipefail
+          echo "╔══════════════════════════════════════════╗"
+          echo "║  🏗️ بناء Debug APK                       ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+          
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace \
+            --build-cache \
+            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+          
+          echo ""
+          echo "✅ تم بناء Debug APK بنجاح!"
 
-          BUILD_TYPE="${{ steps.config.outputs.build_type }}"
-
-          flutter pub get
-
-          case "$BUILD_TYPE" in
-            debug)   flutter build apk --debug   ;;
-            release) flutter build apk --release 2>/dev/null || flutter build apk --debug ;;
-            both)
-              flutter build apk --debug
-              flutter build apk --release 2>/dev/null || echo "⚠️  Release failed"
-              ;;
-            *)       flutter build apk --debug ;;
-          esac
-
-          # Also try split-per-abi for smaller APKs
-          flutter build apk --split-per-abi --debug 2>/dev/null || true
-
-          echo "✅ Flutter build complete"
-
-      # ┌─────────────────────────────────────────────┐
-      # │  13. BUILD — REACT NATIVE                    │
-      # └─────────────────────────────────────────────┘
-      - name: "\u269B\uFE0F Build React Native APK"
-        if: steps.config.outputs.type == 'react-native'
+      - name: 🏗️ Build Release APK
+        if: >-
+          github.event_name == 'workflow_dispatch' && 
+          (github.event.inputs.build_type == 'release' || 
+           github.event.inputs.build_type == 'both')
         run: |
-          set -eo pipefail
-
-          BUILD_TYPE="${{ steps.config.outputs.build_type }}"
-
-          # Bundle JS
-          npx react-native bundle \
-            --platform android \
-            --dev false \
-            --entry-file index.js \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res/ 2>/dev/null || true
-
-          cd android
-          echo "sdk.dir=${ANDROID_HOME}" > local.properties
-          chmod +x gradlew 2>/dev/null || true
-
-          case "$BUILD_TYPE" in
-            debug)   ./gradlew assembleDebug   --stacktrace ;;
-            release) ./gradlew assembleRelease --stacktrace 2>/dev/null \
-                     || ./gradlew assembleDebug --stacktrace ;;
-            *)       ./gradlew assembleDebug   --stacktrace ;;
-          esac
-
-          cd ..
-          echo "✅ React Native build complete"
-
-      # ┌─────────────────────────────────────────────┐
-      # │  14. BUILD — IONIC / CAPACITOR               │
-      # └─────────────────────────────────────────────┘
-      - name: "\u26A1 Build Ionic Capacitor APK"
-        if: steps.config.outputs.type == 'ionic'
-        run: |
-          set -eo pipefail
-
-          npm i -g @ionic/cli @capacitor/cli 2>/dev/null || true
-
-          # Build web assets
-          ionic build --prod 2>/dev/null \
-            || npx ng build --configuration production 2>/dev/null \
-            || npm run build 2>/dev/null \
-            || true
-
-          npx cap sync android 2>/dev/null || true
-
-          cd android
-          echo "sdk.dir=${ANDROID_HOME}" > local.properties
-          chmod +x gradlew 2>/dev/null || true
-          ./gradlew assembleDebug --stacktrace
-          cd ..
-
-          echo "✅ Ionic build complete"
+          echo "╔══════════════════════════════════════════╗"
+          echo "║  🏗️ بناء Release APK                     ║"
+          echo "╚══════════════════════════════════════════╝"
+          echo ""
+          
+          # التحقق من وجود signing config
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "🔐 تم العثور على مفتاح التوقيع..."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > /tmp/release-keystore.jks
+            
+            ./gradlew assembleRelease \
+              --no-daemon \
+              --stacktrace \
+              --build-cache \
+              -Pandroid.injected.signing.store.file=/tmp/release-keystore.jks \
+              -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
+              -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
+              -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}" \
+              -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+            
+            rm -f /tmp/release-keystore.jks
+          else
+            echo "⚠️ لا يوجد مفتاح توقيع - سيتم بناء APK غير موقع"
+            ./gradlew assembleRelease \
+              --no-daemon \
+              --stacktrace \
+              --build-cache \
+              -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" || {
+              echo ""
+              echo "⚠️ فشل بناء Release - قد تحتاج إلى إعداد التوقيع"
+              echo "   أضف Secrets التالية في إعدادات المستودع:"
+              echo "   • KEYSTORE_BASE64"
+              echo "   • KEYSTORE_PASSWORD"
+              echo "   • KEY_ALIAS"
+              echo "   • KEY_PASSWORD"
+              exit 1
+            }
+          fi
+          
+          echo ""
+          echo "✅ تم بناء Release APK بنجاح!"
+        continue-on-error: true
 
       # ┌─────────────────────────────────────────────┐
-      # │  15. COLLECT APKs                            │
+      # │  📊 STEP 11: Build Summary                  │
       # └─────────────────────────────────────────────┘
-      - name: "\U0001F4E6 Collect APK Files"
-        id: apk
+      - name: 📊 Build Summary
         if: always()
         run: |
-          set -eo pipefail
-
-          echo "══════════════════════════════════════════"
-          echo "🔍 COLLECTING APK FILES"
-          echo "══════════════════════════════════════════"
-
-          mkdir -p apk-output
-
-          COUNT=0
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            NAME=$(basename "$f")
-            SIZE=$(du -h "$f" | cut -f1)
-
-            # Skip intermediates & test APKs
-            case "$f" in
-              *intermediates*|*androidTest*) continue ;;
-            esac
-
-            cp "$f" "apk-output/${NAME}"
-            echo "  📱 ${NAME}  (${SIZE})"
-            COUNT=$((COUNT + 1))
-          done < <(find . -name "*.apk" -type f 2>/dev/null | sort)
-
           echo ""
-          echo "📊 Total APKs: ${COUNT}"
-          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
-
-          if [ "$COUNT" -gt 0 ]; then
-            echo "status=success" >> "$GITHUB_OUTPUT"
-            echo ""
-            ls -lhS apk-output/
+          echo "╔══════════════════════════════════════════════════╗"
+          echo "║              📊 ملخص البناء                      ║"
+          echo "╠══════════════════════════════════════════════════╣"
+          echo "║                                                  ║"
+          echo "║  اللغة:        ${{ steps.config.outputs.language }}"
+          echo "║  نوع DSL:      ${{ steps.config.outputs.dsl }}"
+          echo "║  إصدار JDK:    ${{ steps.config.outputs.jdk_version }}"
+          echo "║  إصدار Gradle: ${{ steps.config.outputs.gradle_version }}"
+          echo "║  Compile SDK:  ${{ steps.config.outputs.compile_sdk }}"
+          echo "║  Target SDK:   ${{ steps.config.outputs.target_sdk }}"
+          echo "║  Min SDK:      ${{ steps.config.outputs.min_sdk }}"
+          echo "║                                                  ║"
+          echo "╠══════════════════════════════════════════════════╣"
+          echo "║  📱 ملفات APK المُنشأة:                          ║"
+          echo "║                                                  ║"
+          
+          APK_COUNT=0
+          while IFS= read -r apk; do
+            [ -z "$apk" ] && continue
+            APK_COUNT=$((APK_COUNT + 1))
+            SIZE=$(du -sh "$apk" 2>/dev/null | cut -f1)
+            NAME=$(basename "$apk")
+            TYPE="debug"
+            echo "$apk" | grep -qi "release" && TYPE="release"
+            ICON="🟢"
+            [ "$TYPE" = "release" ] && ICON="🔵"
+            echo "║  $ICON $NAME  ($SIZE)"
+          done < <(find . -name "*.apk" \
+            -not -path "*/intermediates/*" \
+            -not -path "*/.gradle/*" \
+            -type f 2>/dev/null | sort)
+          
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo "║  ❌ لم يتم إنشاء أي ملف APK                    ║"
           else
-            echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "❌ No APK files generated"
+            echo "║                                                  ║"
+            echo "║  📦 المجموع: $APK_COUNT ملف APK                 ║"
           fi
+          
+          echo "║                                                  ║"
+          echo "╚══════════════════════════════════════════════════╝"
+          echo ""
+          echo "💡 يمكنك تحميل ملفات APK من قسم Artifacts أدناه"
 
       # ┌─────────────────────────────────────────────┐
-      # │  16. UPLOAD ARTIFACTS                        │
+      # │  📤 STEP 12: Upload Artifacts               │
       # └─────────────────────────────────────────────┘
-      - name: "\U0001F4E4 Upload All APKs"
-        if: steps.apk.outputs.status == 'success'
+      - name: 📤 Upload Debug APK
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: "APK-${{ github.event.repository.name }}-${{ github.run_number }}"
-          path: apk-output/*.apk
-          retention-days: 90
-          compression-level: 0
-
-      - name: "\U0001F4E4 Upload Debug APK"
-        if: steps.apk.outputs.status == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: "Debug-APK"
-          path: apk-output/*debug*.apk
-          retention-days: 90
+          name: "APK-Debug-build${{ github.run_number }}"
+          path: |
+            **/build/outputs/apk/debug/**/*.apk
           if-no-files-found: ignore
+          retention-days: 30
           compression-level: 0
 
-      - name: "\U0001F4E4 Upload Release APK"
-        if: steps.apk.outputs.status == 'success'
+      - name: 📤 Upload Release APK
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: "Release-APK"
-          path: apk-output/*release*.apk
-          retention-days: 90
+          name: "APK-Release-build${{ github.run_number }}"
+          path: |
+            **/build/outputs/apk/release/**/*.apk
           if-no-files-found: ignore
+          retention-days: 90
           compression-level: 0
 
-      # ┌─────────────────────────────────────────────┐
-      # │  17. BUILD LOGS (on failure)                 │
-      # └─────────────────────────────────────────────┘
-      - name: "\U0001F4CB Upload Build Logs"
+      - name: 📤 Upload All APKs (Backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "All-APKs-build${{ github.run_number }}"
+          path: |
+            **/build/outputs/apk/**/*.apk
+            !**/intermediates/**
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 0
+
+      - name: 📤 Upload Build Reports (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: "build-logs"
+          name: "Build-Reports-build${{ github.run_number }}"
           path: |
-            /tmp/build_*.log
-            **/build/reports/
-          retention-days: 7
+            **/build/reports/**
+            **/build/outputs/logs/**
           if-no-files-found: ignore
+          retention-days: 7
 
       # ┌─────────────────────────────────────────────┐
-      # │  18. FINAL SUMMARY                           │
+      # │  ✅ STEP 13: Final Status                    │
       # └─────────────────────────────────────────────┘
-      - name: "\U0001F4CA Build Summary"
+      - name: ✅ Final Status
         if: always()
         run: |
-          APK_STATUS="${{ steps.apk.outputs.status || 'unknown' }}"
-          APK_COUNT="${{ steps.apk.outputs.count || '0' }}"
-
-          echo ""
-          echo "╔══════════════════════════════════════════════════╗"
-          echo "║           📊  BUILD SUMMARY  📊                  ║"
-          echo "╠══════════════════════════════════════════════════╣"
-          echo "║  📱 Project    : ${{ steps.config.outputs.type }}"
-          echo "║  🔧 Framework  : ${{ steps.config.outputs.framework }}"
-          echo "║  ☕ Java       : ${{ steps.config.outputs.java_version }}"
-          echo "║  📱 compileSdk : ${{ steps.config.outputs.compile_sdk }}"
-          echo "║  🔨 Build Type : ${{ steps.config.outputs.build_type }}"
-          echo "║  📦 APKs       : ${APK_COUNT}"
-          echo "║  📊 Status     : ${APK_STATUS}"
-          echo "╠══════════════════════════════════════════════════╣"
-
-          if [ "$APK_STATUS" = "success" ]; then
-            echo "║  ✅  BUILD SUCCESSFUL!                           ║"
-            echo "║                                                  ║"
-            echo "║  📥 Download APK from 'Artifacts' section        ║"
-            echo "║     in the Actions tab above ⬆️                  ║"
+          APK_COUNT=$(find . -name "*.apk" -not -path "*/intermediates/*" -type f 2>/dev/null | wc -l)
+          
+          if [ "$APK_COUNT" -gt 0 ]; then
+            echo "🎉 تم البناء بنجاح! ($APK_COUNT ملف APK)"
+            echo "📥 اذهب إلى Artifacts لتحميل ملفات APK"
           else
-            echo "║  ❌  BUILD FAILED                                ║"
-            echo "║                                                  ║"
-            echo "║  💡 Try these fixes:                             ║"
-            echo "║     1. Ensure project builds locally             ║"
-            echo "║     2. Try different Java version (workflow_dispatch) ║"
-            echo "║     3. Check build-logs artifact                 ║"
-            echo "║     4. Ensure all deps are in repositories       ║"
+            echo "❌ فشل البناء - راجع السجلات أعلاه"
+            echo "📋 تحقق من Build Reports في Artifacts"
           fi
-
-          echo "╚══════════════════════════════════════════════════╝"
