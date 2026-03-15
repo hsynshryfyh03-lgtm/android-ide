@@ -1,117 +1,949 @@
-name: Build AndroidIDE APK
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  🚀 ULTIMATE ANDROID APK BUILDER                               ║
+# ║  يدعم: Android Native | Flutter | React Native | Ionic | MAUI  ║
+# ║  يكشف المشروع تلقائياً ويبني APK بدون أي إعداد يدوي            ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+name: "\U0001F680 Ultimate Android APK Builder"
 
 on:
   push:
-    branches: [ main, master ]
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
   workflow_dispatch:
+    inputs:
+      build_type:
+        description: "نوع البناء"
+        required: false
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - release
+          - both
+      java_version:
+        description: "إصدار Java (auto = كشف تلقائي)"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - "8"
+          - "11"
+          - "17"
+          - "21"
+      clean_build:
+        description: "بناء نظيف"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  GRADLE_OPTS: >-
+    -Dorg.gradle.daemon=false
+    -Dorg.gradle.parallel=true
+    -Dorg.gradle.caching=true
+    -Dorg.gradle.jvmargs=-Xmx4g
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  TERM: dumb
 
 jobs:
   build:
+    name: "\U0001F528 Build Android APK"
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    timeout-minutes: 120
 
     steps:
-
-      - name: Checkout
+      # ┌─────────────────────────────────────────────┐
+      # │  1. CHECKOUT                                 │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F4E5 Checkout Repository"
         uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          fetch-depth: 1
+          lfs: true
 
-      - name: Extract project from ZIP
+      # ┌─────────────────────────────────────────────┐
+      # │  2. ZIP EXTRACTION - استخراج المشروع المضغوط │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F4E6 Extract ZIP Project"
+        id: extract
         run: |
-          ZIP=$(find . -maxdepth 2 -name "*.zip" | head -1)
-          if [ -n "$ZIP" ]; then
-            echo "Found ZIP: $ZIP"
-            unzip -q "$ZIP" -d /tmp/extracted
-            PROJ=$(find /tmp/extracted -name "build.gradle" -path "*/app/build.gradle" \
-                   | head -1 | xargs dirname | xargs dirname)
-            echo "Project root: $PROJ"
-            if [ "$PROJ" != "." ] && [ -n "$PROJ" ]; then
-              cp -r "$PROJ/." .
+          set -eo pipefail
+
+          echo "══════════════════════════════════════════"
+          echo "🔍 Searching for ZIP files..."
+          echo "══════════════════════════════════════════"
+
+          mapfile -t ZIP_FILES < <(find . -maxdepth 1 -name "*.zip" -type f 2>/dev/null | sort -r)
+
+          if [ ${#ZIP_FILES[@]} -eq 0 ]; then
+            echo "ℹ️  No ZIP files found — using repo structure as-is"
+            echo "extracted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "📦 Found ${#ZIP_FILES[@]} ZIP file(s):"
+          printf '   • %s (%s)\n' $(for f in "${ZIP_FILES[@]}"; do echo "$f"; du -h "$f" | cut -f1; done)
+
+          # ---------- pick the largest ZIP ----------
+          BEST=""
+          BEST_SIZE=0
+          for z in "${ZIP_FILES[@]}"; do
+            SZ=$(stat -c%s "$z" 2>/dev/null || echo 0)
+            if [ "$SZ" -gt "$BEST_SIZE" ]; then
+              BEST_SIZE=$SZ
+              BEST="$z"
+            fi
+          done
+          ZIP_FILE="$BEST"
+          echo ""
+          echo "📦 Extracting: $ZIP_FILE"
+
+          EXTRACT_DIR="/tmp/_zip_extract_$$"
+          mkdir -p "$EXTRACT_DIR"
+          unzip -q -o "$ZIP_FILE" -d "$EXTRACT_DIR" || {
+            echo "❌ unzip failed – trying jar xf"
+            cd "$EXTRACT_DIR" && jar xf "$OLDPWD/$ZIP_FILE" && cd "$OLDPWD"
+          }
+
+          # ---------- smart project-root detection ----------
+          echo "🔍 Detecting project root inside ZIP..."
+
+          find_marker() {
+            find "$EXTRACT_DIR" -maxdepth 5 -name "$1" -type f 2>/dev/null | head -1
+          }
+
+          PROJECT_ROOT=""
+
+          # Priority 1 — settings.gradle(.kts) at shallowest depth
+          for m in settings.gradle settings.gradle.kts; do
+            FOUND=$(find "$EXTRACT_DIR" -maxdepth 5 -name "$m" -type f 2>/dev/null \
+                    | awk -F/ '{print NF-1, $0}' | sort -n | head -1 | cut -d' ' -f2-)
+            if [ -n "$FOUND" ]; then
+              PROJECT_ROOT=$(dirname "$FOUND")
+              break
+            fi
+          done
+
+          # Priority 2 — build.gradle(.kts)
+          if [ -z "$PROJECT_ROOT" ]; then
+            for m in build.gradle build.gradle.kts; do
+              FOUND=$(find_marker "$m")
+              [ -n "$FOUND" ] && PROJECT_ROOT=$(dirname "$FOUND") && break
+            done
+          fi
+
+          # Priority 3 — Flutter / RN / Ionic
+          if [ -z "$PROJECT_ROOT" ]; then
+            for m in pubspec.yaml package.json config.xml; do
+              FOUND=$(find_marker "$m")
+              [ -n "$FOUND" ] && PROJECT_ROOT=$(dirname "$FOUND") && break
+            done
+          fi
+
+          if [ -z "$PROJECT_ROOT" ]; then
+            echo "❌ Cannot detect any project structure inside ZIP"
+            find "$EXTRACT_DIR" -maxdepth 3 | head -60
+            exit 1
+          fi
+
+          echo "✅ Project root: $PROJECT_ROOT"
+
+          # ---------- move project to workspace ----------
+          shopt -s dotglob
+          find . -maxdepth 1 ! -name '.' ! -name '.git' ! -name '.github' -exec rm -rf {} +
+          cp -a "$PROJECT_ROOT"/. ./
+          rm -f ./*.zip
+          rm -rf "$EXTRACT_DIR"
+
+          echo "extracted=true" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "📂 Extracted project structure (top 3 levels):"
+          find . -maxdepth 3 -not -path './.git/*' -not -path './.github/*' | head -60
+
+      # ┌─────────────────────────────────────────────┐
+      # │  3. PROJECT DETECTION - كشف نوع المشروع     │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F50D Detect Project Type & Config"
+        id: config
+        run: |
+          set -eo pipefail
+
+          echo "══════════════════════════════════════════"
+          echo "🔍 AUTO-DETECTING PROJECT CONFIGURATION"
+          echo "══════════════════════════════════════════"
+
+          # ─── helpers ───
+          has_file()  { find . -maxdepth 4 -name "$1" -not -path './.git/*' -type f 2>/dev/null | head -1; }
+          grep_src()  { grep -rql "$1" --include="*.gradle" --include="*.kts" . 2>/dev/null | head -1; }
+
+          # ═══ Project Type ═══
+          TYPE="unknown"
+          FRAMEWORK=""
+
+          # Android Gradle
+          if [ -n "$(has_file 'settings.gradle')" ] || [ -n "$(has_file 'settings.gradle.kts')" ] \
+             || [ -n "$(has_file 'build.gradle')" ] || [ -n "$(has_file 'build.gradle.kts')" ]; then
+            if [ -n "$(grep_src 'com\.android\.application')" ] || [ -n "$(grep_src 'com\.android\.library')" ]; then
+              TYPE="android"
+              # Detect sub-framework
+              if [ -n "$(grep_src 'com\.android\.application')" ]; then
+                [ -n "$(grep_src 'kotlin-android\|org\.jetbrains\.kotlin')" ] && FRAMEWORK="kotlin" || FRAMEWORK="java"
+              fi
+              # Compose?
+              [ -n "$(grep_src 'compose')" ] && FRAMEWORK="${FRAMEWORK}-compose"
             fi
           fi
-          echo "=== Files ===" && ls -la
-          echo "=== app/ ===" && ls app/ 2>/dev/null || echo "app/ not found"
 
-      - name: Download gradle-wrapper.jar
-        run: |
-          mkdir -p gradle/wrapper
-          # Download official Gradle 8.4 distribution and extract wrapper jar
-          curl -sSfL \
-            "https://services.gradle.org/distributions/gradle-8.4-bin.zip" \
-            -o /tmp/gradle-bin.zip
-          unzip -q /tmp/gradle-bin.zip -d /tmp/gradle-bin
-          JAR=$(find /tmp/gradle-bin -name "gradle-wrapper.jar" 2>/dev/null | head -1)
-          if [ -z "$JAR" ]; then
-            JAR=$(find /tmp/gradle-bin -name "*wrapper*.jar" 2>/dev/null | head -1)
+          # Flutter
+          if [ -n "$(has_file 'pubspec.yaml')" ]; then
+            PUB=$(has_file 'pubspec.yaml')
+            if grep -q 'flutter:' "$PUB" 2>/dev/null; then
+              TYPE="flutter"
+              FRAMEWORK="flutter"
+            fi
           fi
-          if [ -n "$JAR" ]; then
-            cp "$JAR" gradle/wrapper/gradle-wrapper.jar
-            echo "OK: gradle-wrapper.jar ($(du -sh gradle/wrapper/gradle-wrapper.jar | cut -f1))"
+
+          # React Native
+          if [ "$TYPE" = "unknown" ] && [ -n "$(has_file 'package.json')" ]; then
+            PKG=$(has_file 'package.json')
+            if grep -q '"react-native"' "$PKG" 2>/dev/null; then
+              TYPE="react-native"
+              FRAMEWORK="react-native"
+            fi
+          fi
+
+          # Ionic / Capacitor
+          if [ "$TYPE" = "unknown" ] && [ -n "$(has_file 'package.json')" ]; then
+            PKG=$(has_file 'package.json')
+            if grep -q '"@capacitor/core"\|"@ionic"' "$PKG" 2>/dev/null; then
+              TYPE="ionic"
+              FRAMEWORK="ionic-capacitor"
+            fi
+          fi
+
+          # .NET MAUI / Xamarin
+          if [ "$TYPE" = "unknown" ]; then
+            if [ -n "$(has_file '*.csproj')" ]; then
+              CSPROJ=$(has_file '*.csproj')
+              if grep -q 'Xamarin\|Maui\|Android' "$CSPROJ" 2>/dev/null; then
+                TYPE="dotnet"
+                FRAMEWORK="maui"
+              fi
+            fi
+          fi
+
+          echo "📱 Project Type : $TYPE"
+          echo "🔧 Framework    : $FRAMEWORK"
+          echo "type=$TYPE"           >> "$GITHUB_OUTPUT"
+          echo "framework=$FRAMEWORK" >> "$GITHUB_OUTPUT"
+
+          # ═══ Java Version ═══
+          INPUT_JAVA="${{ github.event.inputs.java_version || 'auto' }}"
+          JAVA_VER="17"
+
+          if [ "$INPUT_JAVA" = "auto" ]; then
+            # from gradle-wrapper
+            if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+              GV=$(grep -oP 'gradle-\K[0-9]+' gradle/wrapper/gradle-wrapper.properties 2>/dev/null || echo 8)
+              [ "$GV" -le 4 ] && JAVA_VER="8"
+              [ "$GV" -ge 5 ] && [ "$GV" -le 6 ] && JAVA_VER="11"
+              [ "$GV" -ge 7 ] && JAVA_VER="17"
+            fi
+            # explicit jvmTarget
+            if grep -rq 'jvmTarget.*21\|VERSION_21' --include='*.gradle' --include='*.kts' . 2>/dev/null; then
+              JAVA_VER="21"
+            fi
           else
-            echo "ERROR: could not find wrapper jar" && exit 1
+            JAVA_VER="$INPUT_JAVA"
           fi
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+          echo "☕ Java Version : $JAVA_VER"
+          echo "java_version=$JAVA_VER" >> "$GITHUB_OUTPUT"
+
+          # ═══ Android SDK Versions ═══
+          extract_ver() {
+            grep -roP "$1"'\s*[=(]\s*\K[0-9]+' --include='*.gradle' --include='*.kts' . 2>/dev/null \
+              | sort -n | tail -1
+          }
+
+          COMPILE_SDK=$(extract_ver 'compileSdk(?:Version)?')
+          TARGET_SDK=$(extract_ver  'targetSdk(?:Version)?')
+          MIN_SDK=$(extract_ver     'minSdk(?:Version)?')
+          BUILD_TOOLS=$(grep -roP 'buildToolsVersion\s*[=(]\s*["'\'']\K[0-9.]+' \
+                        --include='*.gradle' --include='*.kts' . 2>/dev/null | head -1)
+
+          [ -z "$COMPILE_SDK" ]  && COMPILE_SDK="34"
+          [ -z "$TARGET_SDK" ]   && TARGET_SDK="$COMPILE_SDK"
+          [ -z "$MIN_SDK" ]      && MIN_SDK="21"
+          [ -z "$BUILD_TOOLS" ]  && BUILD_TOOLS="${COMPILE_SDK}.0.0"
+
+          echo "📱 compileSdk   : $COMPILE_SDK"
+          echo "📱 targetSdk    : $TARGET_SDK"
+          echo "📱 minSdk       : $MIN_SDK"
+          echo "📱 buildTools   : $BUILD_TOOLS"
+
+          echo "compile_sdk=$COMPILE_SDK"   >> "$GITHUB_OUTPUT"
+          echo "target_sdk=$TARGET_SDK"     >> "$GITHUB_OUTPUT"
+          echo "min_sdk=$MIN_SDK"           >> "$GITHUB_OUTPUT"
+          echo "build_tools=$BUILD_TOOLS"   >> "$GITHUB_OUTPUT"
+
+          # ═══ App Module Detection ═══
+          APP_MODULE="app"
+
+          # Find module with com.android.application plugin
+          while IFS= read -r gf; do
+            if grep -q 'com\.android\.application' "$gf" 2>/dev/null; then
+              MOD_DIR=$(dirname "$gf")
+              if [ "$MOD_DIR" = "." ]; then
+                APP_MODULE="."
+              else
+                APP_MODULE=$(echo "$MOD_DIR" | sed 's|/|:|g; s|^\./||')
+              fi
+              break
+            fi
+          done < <(find . -maxdepth 3 -name "build.gradle" -o -name "build.gradle.kts" 2>/dev/null | sort)
+
+          echo "📦 App Module   : $APP_MODULE"
+          echo "app_module=$APP_MODULE" >> "$GITHUB_OUTPUT"
+
+          # ═══ NDK / CMake ═══
+          NEEDS_NDK="false"
+          NDK_VER=""
+          NEEDS_CMAKE="false"
+          CMAKE_VER=""
+
+          if grep -rq 'ndkVersion\|externalNativeBuild\|ndk-build' --include='*.gradle' --include='*.kts' . 2>/dev/null \
+             || [ -d "app/src/main/jni" ] || [ -d "app/src/main/cpp" ]; then
+            NEEDS_NDK="true"
+            NDK_VER=$(grep -roP 'ndkVersion\s*[=(]\s*["'\'']\K[0-9.]+' --include='*.gradle' --include='*.kts' . 2>/dev/null | head -1)
+            [ -z "$NDK_VER" ] && NDK_VER="26.1.10909125"
+          fi
+
+          if grep -rq 'externalNativeBuild\s*\{[^}]*cmake\|cmake\s*\{' --include='*.gradle' --include='*.kts' . 2>/dev/null; then
+            NEEDS_CMAKE="true"
+            CMAKE_VER=$(grep -roP 'cmake[^}]*version\s*["'\'']\K[0-9.]+' --include='*.gradle' --include='*.kts' . 2>/dev/null | head -1)
+            [ -z "$CMAKE_VER" ] && CMAKE_VER="3.22.1"
+          fi
+
+          echo "needs_ndk=$NEEDS_NDK"       >> "$GITHUB_OUTPUT"
+          echo "ndk_version=$NDK_VER"       >> "$GITHUB_OUTPUT"
+          echo "needs_cmake=$NEEDS_CMAKE"   >> "$GITHUB_OUTPUT"
+          echo "cmake_version=$CMAKE_VER"   >> "$GITHUB_OUTPUT"
+
+          # ═══ Build Flavors ═══
+          FLAVORS=""
+          FLAVORS=$(grep -roP 'productFlavors\s*\{[^}]*' --include='*.gradle' --include='*.kts' . 2>/dev/null \
+                    | grep -oP '^\s*\K\w+(?=\s*\{)' | tr '\n' ',' | sed 's/,$//' || true)
+          echo "flavors=$FLAVORS" >> "$GITHUB_OUTPUT"
+          [ -n "$FLAVORS" ] && echo "🎨 Flavors      : $FLAVORS"
+
+          # ═══ Build Type ═══
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
+          echo "build_type=$BUILD_TYPE" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "══════════════════════════════════════════"
+          echo "✅ DETECTION COMPLETE"
+          echo "══════════════════════════════════════════"
+
+      # ┌─────────────────────────────────────────────┐
+      # │  4. SETUP JDK                                │
+      # └─────────────────────────────────────────────┘
+      - name: "\u2615 Set up JDK ${{ steps.config.outputs.java_version }}"
+        uses: actions/setup-java@v4
         with:
-          gradle-version: "8.4"
-          validate-wrappers: false
+          java-version: ${{ steps.config.outputs.java_version }}
+          distribution: "temurin"
 
-      - name: Make gradlew executable
-        run: chmod +x gradlew
+      # ┌─────────────────────────────────────────────┐
+      # │  5. SETUP ANDROID SDK                        │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F4F1 Setup Android SDK"
+        uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
 
-      - name: Generate debug keystore
+      - name: "\U0001F4F1 Install SDK Components"
         run: |
-          keytool -genkeypair \
-            -alias androiddebugkey \
-            -keypass android \
-            -keystore app/debug.keystore \
-            -storepass android \
-            -dname "CN=Android Debug,O=Android,C=US" \
-            -validity 10000 \
-            -keyalg RSA -keysize 2048 -noprompt
-          echo "Keystore created"
+          set -eo pipefail
 
-      - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+          CS="${{ steps.config.outputs.compile_sdk }}"
+          BT="${{ steps.config.outputs.build_tools }}"
 
-      - name: Build Release APK
-        run: gradle assembleRelease --no-daemon --stacktrace
+          yes | sdkmanager --licenses 2>/dev/null || true
 
-      - name: List APKs
+          PACKAGES=(
+            "platforms;android-${CS}"
+            "build-tools;${BT}"
+            "platform-tools"
+          )
+
+          # Extra platforms referenced in project
+          for sdk in 35 34 33 32 31 30 29 28 27 26 25 24 23; do
+            if grep -rq "android-${sdk}\|compileSdk.*${sdk}\|targetSdk.*${sdk}" \
+               --include='*.gradle' --include='*.kts' . 2>/dev/null; then
+              PACKAGES+=("platforms;android-${sdk}")
+            fi
+          done
+
+          # NDK
+          if [ "${{ steps.config.outputs.needs_ndk }}" = "true" ]; then
+            PACKAGES+=("ndk;${{ steps.config.outputs.ndk_version }}")
+          fi
+
+          # CMake
+          if [ "${{ steps.config.outputs.needs_cmake }}" = "true" ]; then
+            PACKAGES+=("cmake;${{ steps.config.outputs.cmake_version }}")
+          fi
+
+          echo "📦 Installing: ${PACKAGES[*]}"
+          sdkmanager "${PACKAGES[@]}" 2>/dev/null || {
+            echo "⚠️  Batch install failed — installing one by one..."
+            for pkg in "${PACKAGES[@]}"; do
+              sdkmanager "$pkg" 2>/dev/null || echo "   ⚠️  Failed: $pkg"
+            done
+          }
+
+          echo "✅ SDK components ready"
+
+      # ┌─────────────────────────────────────────────┐
+      # │  6. SETUP FLUTTER (if needed)                │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F426 Setup Flutter"
+        if: steps.config.outputs.type == 'flutter'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          cache: true
+
+      - name: "\U0001F426 Flutter Doctor"
+        if: steps.config.outputs.type == 'flutter'
+        run: flutter doctor -v
+
+      # ┌─────────────────────────────────────────────┐
+      # │  7. SETUP NODE.JS (if needed)                │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F4E6 Setup Node.js"
+        if: >-
+          steps.config.outputs.type == 'react-native' ||
+          steps.config.outputs.type == 'ionic'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: "\U0001F4E6 Install Node Dependencies"
+        if: >-
+          steps.config.outputs.type == 'react-native' ||
+          steps.config.outputs.type == 'ionic'
         run: |
-          echo "=== Debug ===" && find app/build/outputs/apk/debug -name "*.apk" -exec ls -lh {} \;
-          echo "=== Release ===" && find app/build/outputs/apk/release -name "*.apk" -exec ls -lh {} \;
+          if [ -f "yarn.lock" ]; then
+            npm i -g yarn && yarn install --frozen-lockfile 2>/dev/null || yarn install
+          elif [ -f "pnpm-lock.yaml" ]; then
+            npm i -g pnpm && pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+          else
+            npm ci 2>/dev/null || npm install
+          fi
 
-      - name: Upload Debug APK
+      # ┌─────────────────────────────────────────────┐
+      # │  8. GRADLE WRAPPER FIX                       │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F527 Fix & Setup Gradle Wrapper"
+        if: steps.config.outputs.type != 'flutter' && steps.config.outputs.type != 'dotnet'
+        run: |
+          set -eo pipefail
+
+          echo "🔧 Fixing Gradle environment..."
+
+          # ── local.properties ──
+          echo "sdk.dir=${ANDROID_HOME}" > local.properties
+          # Also for react-native / ionic sub-project
+          [ -d "android" ] && echo "sdk.dir=${ANDROID_HOME}" > android/local.properties
+
+          # ── Determine desired Gradle version ──
+          GRADLE_VER="8.7"
+          if [ -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+            DET=$(grep -oP 'gradle-\K[0-9]+\.[0-9]+(\.[0-9]+)?' \
+                  gradle/wrapper/gradle-wrapper.properties 2>/dev/null || true)
+            [ -n "$DET" ] && GRADLE_VER="$DET"
+          fi
+
+          # ── Ensure wrapper exists ──
+          if [ ! -f "gradlew" ] || [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "⚠️  Gradle wrapper missing — generating for v${GRADLE_VER}..."
+            mkdir -p gradle/wrapper
+
+            # Download wrapper jar from Gradle GitHub
+            WRAPPER_JAR_URL="https://github.com/gradle/gradle/raw/v${GRADLE_VER}/gradle/wrapper/gradle-wrapper.jar"
+            curl -sL "$WRAPPER_JAR_URL" -o gradle/wrapper/gradle-wrapper.jar 2>/dev/null || {
+              echo "   Downloading full Gradle to regenerate wrapper..."
+              wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" \
+                   -O /tmp/gradle-dist.zip 2>/dev/null || {
+                GRADLE_VER="8.7"
+                wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" \
+                     -O /tmp/gradle-dist.zip
+              }
+              unzip -q /tmp/gradle-dist.zip -d /tmp/
+              /tmp/gradle-${GRADLE_VER}/bin/gradle wrapper --gradle-version="${GRADLE_VER}"
+              rm -rf /tmp/gradle*
+            }
+
+            # Create wrapper properties if missing
+            if [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+              cat > gradle/wrapper/gradle-wrapper.properties << GWPEOF
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip
+          networkTimeout=10000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          GWPEOF
+            fi
+
+            # Create gradlew script if missing
+            if [ ! -f "gradlew" ]; then
+              cat > gradlew << 'GWEOF'
+          #!/bin/sh
+          exec java -jar "$(dirname "$0")/gradle/wrapper/gradle-wrapper.jar" "$@"
+          GWEOF
+            fi
+          fi
+
+          chmod +x gradlew 2>/dev/null || true
+          [ -d "android" ] && chmod +x android/gradlew 2>/dev/null || true
+
+          # ── gradle.properties — ensure sane defaults ──
+          GP="gradle.properties"
+          touch "$GP"
+          ensure_prop() {
+            grep -q "^${1}=" "$GP" 2>/dev/null || echo "${1}=${2}" >> "$GP"
+          }
+          ensure_prop "org.gradle.jvmargs"           "-Xmx4g -XX:+HeapDumpOnOutOfMemoryError -XX:MaxMetaspaceSize=1g"
+          ensure_prop "org.gradle.parallel"           "true"
+          ensure_prop "org.gradle.caching"            "true"
+          ensure_prop "org.gradle.configureondemand"  "true"
+          ensure_prop "android.useAndroidX"           "true"
+          ensure_prop "android.nonTransitiveRClass"   "true"
+
+          echo "✅ Gradle environment ready  (v${GRADLE_VER})"
+
+      # ┌─────────────────────────────────────────────┐
+      # │  9. CACHE DEPENDENCIES                       │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F4BE Cache Gradle"
+        if: steps.config.outputs.type != 'flutter' && steps.config.outputs.type != 'dotnet'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.android/build-cache
+            .gradle
+          key: gradle-${{ runner.os }}-${{ steps.config.outputs.java_version }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-${{ steps.config.outputs.java_version }}-
+            gradle-${{ runner.os }}-
+
+      - name: "\U0001F4BE Cache Flutter"
+        if: steps.config.outputs.type == 'flutter'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: flutter-${{ runner.os }}-${{ hashFiles('pubspec.lock', 'pubspec.yaml') }}
+          restore-keys: flutter-${{ runner.os }}-
+
+      # ┌─────────────────────────────────────────────┐
+      # │  10. AUTO-FIX COMMON ISSUES                  │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F527 Auto-Fix Common Build Issues"
+        if: steps.config.outputs.type == 'android'
+        run: |
+          set -eo pipefail
+
+          echo "🔧 Scanning & fixing common issues..."
+
+          # ── Fix 1: Missing google-services.json ──
+          for gf in $(find . -maxdepth 3 -name "build.gradle" -o -name "build.gradle.kts" 2>/dev/null); do
+            DIR=$(dirname "$gf")
+            if grep -q 'com\.google\.gms\.google-services\|google-services' "$gf" 2>/dev/null; then
+              if [ ! -f "$DIR/google-services.json" ]; then
+                echo "⚠️  Creating placeholder google-services.json in $DIR"
+                # Detect package name
+                PKG="com.example.app"
+                MANIFEST="$DIR/src/main/AndroidManifest.xml"
+                [ -f "$MANIFEST" ] && PKG=$(grep -oP 'package="\K[^"]+' "$MANIFEST" 2>/dev/null || echo "com.example.app")
+
+                cat > "$DIR/google-services.json" << GSEOF
+          {"project_info":{"project_number":"000000000000","project_id":"placeholder","storage_bucket":"placeholder.appspot.com"},"client":[{"client_info":{"mobilesdk_app_id":"1:000000000000:android:0000000000000000","android_client_info":{"package_name":"${PKG}"}},"api_key":[{"current_key":"AIzaSyPlaceholder"}]}],"configuration_version":"1"}
+          GSEOF
+              fi
+            fi
+          done
+
+          # ── Fix 2: Missing settings.gradle ──
+          if [ ! -f "settings.gradle" ] && [ ! -f "settings.gradle.kts" ]; then
+            if [ -f "app/build.gradle" ] || [ -f "app/build.gradle.kts" ]; then
+              echo "include ':app'" > settings.gradle
+              echo "⚠️  Created missing settings.gradle"
+            fi
+          fi
+
+          # ── Fix 3: Version catalog compatibility ──
+          if [ -f "gradle/libs.versions.toml" ]; then
+            # Ensure Gradle version supports version catalogs (7.0+)
+            echo "📦 Version catalog (libs.versions.toml) detected"
+          fi
+
+          # ── Fix 4: Missing AndroidManifest namespace ──
+          for gf in $(find . -maxdepth 3 -name "build.gradle" 2>/dev/null); do
+            if grep -q 'com\.android\.application\|com\.android\.library' "$gf" 2>/dev/null; then
+              if ! grep -q 'namespace' "$gf" 2>/dev/null; then
+                DIR=$(dirname "$gf")
+                MANIFEST="$DIR/src/main/AndroidManifest.xml"
+                if [ -f "$MANIFEST" ]; then
+                  PKG=$(grep -oP 'package="\K[^"]+' "$MANIFEST" 2>/dev/null || true)
+                  if [ -n "$PKG" ]; then
+                    # Check Gradle version — namespace required since AGP 8+
+                    AGP_VER=$(grep -roP 'com\.android\.tools\.build:gradle:\K[0-9]+' \
+                              --include='*.gradle' --include='*.kts' . 2>/dev/null | head -1 || echo "7")
+                    if [ "${AGP_VER:-7}" -ge 8 ]; then
+                      echo "⚠️  Adding namespace '$PKG' to $gf"
+                      sed -i "/android\s*{/a\\    namespace \"$PKG\"" "$gf" 2>/dev/null || true
+                    fi
+                  fi
+                fi
+              fi
+            fi
+          done
+
+          # ── Fix 5: Ensure repositories ──
+          for sf in settings.gradle settings.gradle.kts; do
+            if [ -f "$sf" ]; then
+              if ! grep -q 'mavenCentral\|google()' "$sf" 2>/dev/null; then
+                if [[ "$sf" == *.kts ]]; then
+                  cat >> "$sf" << 'REPOEOF'
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven { url = uri("https://jitpack.io") }
+                  maven { url = uri("https://maven.google.com") }
+              }
+          }
+          REPOEOF
+                else
+                  cat >> "$sf" << 'REPOEOF'
+
+          dependencyResolutionManagement {
+              repositoriesMode = RepositoriesMode.PREFER_SETTINGS
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven { url 'https://jitpack.io' }
+                  maven { url 'https://maven.google.com' }
+              }
+          }
+          REPOEOF
+                fi
+                echo "⚠️  Added repository declarations to $sf"
+              fi
+            fi
+          done
+
+          echo "✅ Common issues check complete"
+
+      # ┌─────────────────────────────────────────────┐
+      # │  11. BUILD — ANDROID NATIVE (Gradle)         │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F528 Build Android APK (Gradle)"
+        if: steps.config.outputs.type == 'android'
+        run: |
+          set -eo pipefail
+
+          BUILD_TYPE="${{ steps.config.outputs.build_type }}"
+          APP="${{ steps.config.outputs.app_module }}"
+
+          echo "══════════════════════════════════════════"
+          echo "🔨 BUILDING ANDROID APK"
+          echo "   Module : ${APP}"
+          echo "   Type   : ${BUILD_TYPE}"
+          echo "══════════════════════════════════════════"
+
+          # Clean
+          [ "${{ github.event.inputs.clean_build }}" = "true" ] && ./gradlew clean 2>/dev/null || true
+
+          # Prefix for gradle task
+          [ "$APP" = "." ] && TASK_PREFIX="" || TASK_PREFIX=":${APP}:"
+
+          build_task() {
+            local TASK="$1"
+            local LABEL="$2"
+            echo ""
+            echo "▶ Running: ./gradlew ${TASK}"
+            echo ""
+
+            ./gradlew "${TASK}" \
+              --stacktrace \
+              --warning-mode all \
+              -Pandroid.injected.testOnly=false \
+              2>&1 | tee "/tmp/build_${LABEL}.log" && return 0
+
+            echo ""
+            echo "⚠️  Retrying with conservative settings..."
+            ./gradlew "${TASK}" \
+              --stacktrace \
+              --no-daemon \
+              --no-parallel \
+              -Pandroid.injected.testOnly=false \
+              -Dorg.gradle.workers.max=2 \
+              -Dorg.gradle.jvmargs="-Xmx4g" \
+              2>&1 | tee "/tmp/build_${LABEL}_retry.log"
+          }
+
+          case "$BUILD_TYPE" in
+            debug)
+              build_task "${TASK_PREFIX}assembleDebug" "debug"
+              ;;
+            release)
+              build_task "${TASK_PREFIX}assembleRelease" "release" || {
+                echo "⚠️  Release failed — falling back to debug"
+                build_task "${TASK_PREFIX}assembleDebug" "debug"
+              }
+              ;;
+            both)
+              build_task "${TASK_PREFIX}assembleDebug" "debug"
+              build_task "${TASK_PREFIX}assembleRelease" "release" || \
+                echo "⚠️  Release build failed (debug OK)"
+              ;;
+            *)
+              build_task "${TASK_PREFIX}assembleDebug" "debug"
+              ;;
+          esac
+
+          echo ""
+          echo "✅ Gradle build finished"
+
+      # ┌─────────────────────────────────────────────┐
+      # │  12. BUILD — FLUTTER                         │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F426 Build Flutter APK"
+        if: steps.config.outputs.type == 'flutter'
+        run: |
+          set -eo pipefail
+
+          BUILD_TYPE="${{ steps.config.outputs.build_type }}"
+
+          flutter pub get
+
+          case "$BUILD_TYPE" in
+            debug)   flutter build apk --debug   ;;
+            release) flutter build apk --release 2>/dev/null || flutter build apk --debug ;;
+            both)
+              flutter build apk --debug
+              flutter build apk --release 2>/dev/null || echo "⚠️  Release failed"
+              ;;
+            *)       flutter build apk --debug ;;
+          esac
+
+          # Also try split-per-abi for smaller APKs
+          flutter build apk --split-per-abi --debug 2>/dev/null || true
+
+          echo "✅ Flutter build complete"
+
+      # ┌─────────────────────────────────────────────┐
+      # │  13. BUILD — REACT NATIVE                    │
+      # └─────────────────────────────────────────────┘
+      - name: "\u269B\uFE0F Build React Native APK"
+        if: steps.config.outputs.type == 'react-native'
+        run: |
+          set -eo pipefail
+
+          BUILD_TYPE="${{ steps.config.outputs.build_type }}"
+
+          # Bundle JS
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res/ 2>/dev/null || true
+
+          cd android
+          echo "sdk.dir=${ANDROID_HOME}" > local.properties
+          chmod +x gradlew 2>/dev/null || true
+
+          case "$BUILD_TYPE" in
+            debug)   ./gradlew assembleDebug   --stacktrace ;;
+            release) ./gradlew assembleRelease --stacktrace 2>/dev/null \
+                     || ./gradlew assembleDebug --stacktrace ;;
+            *)       ./gradlew assembleDebug   --stacktrace ;;
+          esac
+
+          cd ..
+          echo "✅ React Native build complete"
+
+      # ┌─────────────────────────────────────────────┐
+      # │  14. BUILD — IONIC / CAPACITOR               │
+      # └─────────────────────────────────────────────┘
+      - name: "\u26A1 Build Ionic Capacitor APK"
+        if: steps.config.outputs.type == 'ionic'
+        run: |
+          set -eo pipefail
+
+          npm i -g @ionic/cli @capacitor/cli 2>/dev/null || true
+
+          # Build web assets
+          ionic build --prod 2>/dev/null \
+            || npx ng build --configuration production 2>/dev/null \
+            || npm run build 2>/dev/null \
+            || true
+
+          npx cap sync android 2>/dev/null || true
+
+          cd android
+          echo "sdk.dir=${ANDROID_HOME}" > local.properties
+          chmod +x gradlew 2>/dev/null || true
+          ./gradlew assembleDebug --stacktrace
+          cd ..
+
+          echo "✅ Ionic build complete"
+
+      # ┌─────────────────────────────────────────────┐
+      # │  15. COLLECT APKs                            │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F4E6 Collect APK Files"
+        id: apk
+        if: always()
+        run: |
+          set -eo pipefail
+
+          echo "══════════════════════════════════════════"
+          echo "🔍 COLLECTING APK FILES"
+          echo "══════════════════════════════════════════"
+
+          mkdir -p apk-output
+
+          COUNT=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            NAME=$(basename "$f")
+            SIZE=$(du -h "$f" | cut -f1)
+
+            # Skip intermediates & test APKs
+            case "$f" in
+              *intermediates*|*androidTest*) continue ;;
+            esac
+
+            cp "$f" "apk-output/${NAME}"
+            echo "  📱 ${NAME}  (${SIZE})"
+            COUNT=$((COUNT + 1))
+          done < <(find . -name "*.apk" -type f 2>/dev/null | sort)
+
+          echo ""
+          echo "📊 Total APKs: ${COUNT}"
+          echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+          if [ "$COUNT" -gt 0 ]; then
+            echo "status=success" >> "$GITHUB_OUTPUT"
+            echo ""
+            ls -lhS apk-output/
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "❌ No APK files generated"
+          fi
+
+      # ┌─────────────────────────────────────────────┐
+      # │  16. UPLOAD ARTIFACTS                        │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F4E4 Upload All APKs"
+        if: steps.apk.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: AndroidIDE-Debug-${{ github.run_number }}
-          path: app/build/outputs/apk/debug/*.apk
-          retention-days: 30
+          name: "APK-${{ github.event.repository.name }}-${{ github.run_number }}"
+          path: apk-output/*.apk
+          retention-days: 90
+          compression-level: 0
 
-      - name: Upload Release APK
+      - name: "\U0001F4E4 Upload Debug APK"
+        if: steps.apk.outputs.status == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: AndroidIDE-Release-${{ github.run_number }}
-          path: app/build/outputs/apk/release/*.apk
-          retention-days: 30
+          name: "Debug-APK"
+          path: apk-output/*debug*.apk
+          retention-days: 90
+          if-no-files-found: ignore
+          compression-level: 0
 
-      - name: Create GitHub Release
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: softprops/action-gh-release@v2
+      - name: "\U0001F4E4 Upload Release APK"
+        if: steps.apk.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: "v1.0-build${{ github.run_number }}"
-          name: "AndroidIDE Build #${{ github.run_number }}"
-          body: "Build #${{ github.run_number }}"
-          files: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/release/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: "Release-APK"
+          path: apk-output/*release*.apk
+          retention-days: 90
+          if-no-files-found: ignore
+          compression-level: 0
+
+      # ┌─────────────────────────────────────────────┐
+      # │  17. BUILD LOGS (on failure)                 │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F4CB Upload Build Logs"
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "build-logs"
+          path: |
+            /tmp/build_*.log
+            **/build/reports/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # ┌─────────────────────────────────────────────┐
+      # │  18. FINAL SUMMARY                           │
+      # └─────────────────────────────────────────────┘
+      - name: "\U0001F4CA Build Summary"
+        if: always()
+        run: |
+          APK_STATUS="${{ steps.apk.outputs.status || 'unknown' }}"
+          APK_COUNT="${{ steps.apk.outputs.count || '0' }}"
+
+          echo ""
+          echo "╔══════════════════════════════════════════════════╗"
+          echo "║           📊  BUILD SUMMARY  📊                  ║"
+          echo "╠══════════════════════════════════════════════════╣"
+          echo "║  📱 Project    : ${{ steps.config.outputs.type }}"
+          echo "║  🔧 Framework  : ${{ steps.config.outputs.framework }}"
+          echo "║  ☕ Java       : ${{ steps.config.outputs.java_version }}"
+          echo "║  📱 compileSdk : ${{ steps.config.outputs.compile_sdk }}"
+          echo "║  🔨 Build Type : ${{ steps.config.outputs.build_type }}"
+          echo "║  📦 APKs       : ${APK_COUNT}"
+          echo "║  📊 Status     : ${APK_STATUS}"
+          echo "╠══════════════════════════════════════════════════╣"
+
+          if [ "$APK_STATUS" = "success" ]; then
+            echo "║  ✅  BUILD SUCCESSFUL!                           ║"
+            echo "║                                                  ║"
+            echo "║  📥 Download APK from 'Artifacts' section        ║"
+            echo "║     in the Actions tab above ⬆️                  ║"
+          else
+            echo "║  ❌  BUILD FAILED                                ║"
+            echo "║                                                  ║"
+            echo "║  💡 Try these fixes:                             ║"
+            echo "║     1. Ensure project builds locally             ║"
+            echo "║     2. Try different Java version (workflow_dispatch) ║"
+            echo "║     3. Check build-logs artifact                 ║"
+            echo "║     4. Ensure all deps are in repositories       ║"
+          fi
+
+          echo "╚══════════════════════════════════════════════════╝"
