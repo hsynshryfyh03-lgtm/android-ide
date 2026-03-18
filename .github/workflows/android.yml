@@ -230,19 +230,14 @@ jobs:
       - name: Build Debug APK
         run: |
           echo "=== BUILDING ==="
-          ./gradlew assembleDebug \
-            --no-daemon \
-            --stacktrace \
-            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" \
+          # JAVA_TOOL_OPTIONS env var handles memory — do NOT pass -Dorg.gradle.jvmargs
+          # on the command line: shell strips quotes → Gradle gets -Xmx4g as its own
+          # flag → "Unknown command-line option '-X'"
+          ./gradlew assembleDebug --no-daemon --stacktrace \
           && echo "BUILD SUCCESSFUL ✓" \
           || {
             echo "First attempt failed — retrying clean..."
-            ./gradlew assembleDebug \
-              --no-daemon \
-              --stacktrace \
-              --no-build-cache \
-              --refresh-dependencies \
-              -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+            ./gradlew assembleDebug --no-daemon --stacktrace --no-build-cache --refresh-dependencies
             echo "BUILD SUCCESSFUL ✓ (retry)"
           }
           echo "APK files:"
