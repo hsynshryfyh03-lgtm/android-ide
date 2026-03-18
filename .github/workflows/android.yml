@@ -57,42 +57,46 @@ jobs:
         run: |
           echo "========== AUTO-FIX =========="
 
-          # Detect Gradle version
+          # ── Detect build system (Groovy vs Kotlin DSL) ──────────
+          IS_KTS=false
+          if [ -f build.gradle.kts ] || [ -f app/build.gradle.kts ]; then
+            IS_KTS=true
+          fi
+          echo "Build system: $([ "$IS_KTS" = true ] && echo 'Kotlin DSL (.kts)' || echo 'Groovy DSL (.gradle)')"
+
+          # ── Detect Gradle version ────────────────────────────────
           GRADLE_VER=""
           if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
             GRADLE_VER=$(grep "distributionUrl" gradle/wrapper/gradle-wrapper.properties | grep -oP 'gradle-\K[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
           fi
           echo "Current Gradle: ${GRADLE_VER:-none}"
 
-          # Detect AGP version
+          # ── Detect AGP version (supports both DSLs) ──────────────
           AGP_VER=""
+          # Groovy style
           [ -f build.gradle ] && AGP_VER=$(grep -oP "com\.android\.tools\.build:gradle:\K[0-9]+\.[0-9]+\.[0-9]+" build.gradle || true)
-          [ -z "$AGP_VER" ] && [ -f build.gradle.kts ] && AGP_VER=$(grep -oP "com\.android\.tools\.build:gradle:\K[0-9]+\.[0-9]+\.[0-9]+" build.gradle.kts || true)
+          # KTS style: id("com.android.application") version "x.y.z"  OR  agp = "x.y.z" in libs.versions.toml
+          [ -z "$AGP_VER" ] && [ -f libs.versions.toml ] && AGP_VER=$(grep -oP 'agp\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' libs.versions.toml || true)
+          [ -z "$AGP_VER" ] && [ -f gradle/libs.versions.toml ] && AGP_VER=$(grep -oP 'agp\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' gradle/libs.versions.toml || true)
           echo "Current AGP: ${AGP_VER:-none}"
 
-          # Detect language
+          # ── Detect language ──────────────────────────────────────
           KT=$(find . -name "*.kt" -not -path "*/build/*" -not -path "*/.gradle/*" -type f | wc -l)
           JV=$(find . -name "*.java" -not -path "*/build/*" -not -path "*/.gradle/*" -type f | wc -l)
           echo "Kotlin files: $KT, Java files: $JV"
 
-          # Check if upgrade needed
+          # ── Check if upgrade needed (only for old Groovy projects) ─
           NEED_UPGRADE=false
-          G_MAJOR=0
-          G_MINOR=0
+          G_MAJOR=0; G_MINOR=0
           if [ -n "$GRADLE_VER" ]; then
             G_MAJOR=$(echo "$GRADLE_VER" | cut -d. -f1)
             G_MINOR=$(echo "$GRADLE_VER" | cut -d. -f2)
           fi
 
-          # Gradle < 7.3 or missing = needs upgrade (JDK 17 required by modern sdkmanager)
-          if [ -z "$GRADLE_VER" ] || [ "$G_MAJOR" -lt 7 ] || ([ "$G_MAJOR" -eq 7 ] && [ "$G_MINOR" -lt 3 ]); then
-            NEED_UPGRADE=true
-          fi
-
-          # No gradlew = needs creation
-          NEED_WRAPPER=false
-          if [ ! -f gradlew ]; then
-            NEED_WRAPPER=true
+          if [ "$IS_KTS" = false ]; then
+            if [ -z "$GRADLE_VER" ] || [ "$G_MAJOR" -lt 7 ] || ([ "$G_MAJOR" -eq 7 ] && [ "$G_MINOR" -lt 3 ]); then
+              NEED_UPGRADE=true
+            fi
           fi
 
           TARGET_GRADLE="$GRADLE_VER"
@@ -100,11 +104,9 @@ jobs:
 
           if [ "$NEED_UPGRADE" = true ]; then
             echo ""
-            echo ">>> UPGRADING PROJECT <<<"
+            echo ">>> UPGRADING PROJECT (Groovy DSL) <<<"
             TARGET_GRADLE="7.5.1"
             TARGET_AGP="7.4.2"
-
-            # Write gradle-wrapper.properties
             echo "Gradle: ${GRADLE_VER:-none} -> $TARGET_GRADLE"
             mkdir -p gradle/wrapper
             printf 'distributionBase=GRADLE_USER_HOME\n' > gradle/wrapper/gradle-wrapper.properties
@@ -113,49 +115,48 @@ jobs:
             printf 'zipStoreBase=GRADLE_USER_HOME\n' >> gradle/wrapper/gradle-wrapper.properties
             printf 'zipStorePath=wrapper/dists\n' >> gradle/wrapper/gradle-wrapper.properties
 
-            # Upgrade AGP in root build.gradle
             if [ -f build.gradle ] && grep -q "com.android.tools.build:gradle" build.gradle; then
               echo "AGP: ${AGP_VER:-none} -> $TARGET_AGP"
               sed -i "s|com\.android\.tools\.build:gradle:[0-9.]*|com.android.tools.build:gradle:${TARGET_AGP}|g" build.gradle
             fi
-          else
-            TARGET_GRADLE="$GRADLE_VER"
           fi
 
-          # Add Kotlin support if .kt files exist
-          if [ "$KT" -gt 0 ]; then
+          # ── Add Kotlin support (Groovy DSL projects only) ─────────
+          # Skip KTS projects — they already handle Kotlin via plugins {}
+          if [ "$KT" -gt 0 ] && [ "$IS_KTS" = false ]; then
             echo ""
-            echo ">>> KOTLIN SUPPORT <<<"
+            echo ">>> KOTLIN SUPPORT (Groovy DSL) <<<"
             KOTLIN_VER="1.7.22"
-
-            # If upgraded to higher, use matching kotlin
             if [ -n "$TARGET_GRADLE" ]; then
               TG_MAJOR=$(echo "$TARGET_GRADLE" | cut -d. -f1)
-              if [ "$TG_MAJOR" -ge 8 ]; then
-                KOTLIN_VER="1.9.22"
+              [ "$TG_MAJOR" -ge 8 ] && KOTLIN_VER="1.9.22"
+            fi
+
+            if [ -f build.gradle ] && ! grep -q "kotlin-gradle-plugin" build.gradle; then
+              # Only modify if this is a real Groovy buildscript (has buildscript block)
+              if grep -q "buildscript" build.gradle; then
+                echo "Adding kotlin classpath ($KOTLIN_VER) to build.gradle"
+                sed -i "/com\.android\.tools\.build:gradle/a\\        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:${KOTLIN_VER}'" build.gradle
+              else
+                echo "Skipping build.gradle (no buildscript block — likely a stub file)"
               fi
             fi
 
-            # Add kotlin classpath
-            if [ -f build.gradle ] && ! grep -q "kotlin-gradle-plugin" build.gradle; then
-              echo "Adding kotlin classpath ($KOTLIN_VER)"
-              sed -i "/com\.android\.tools\.build:gradle/a\\        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:${KOTLIN_VER}'" build.gradle
-            fi
-
-            # Add kotlin plugin in app/build.gradle
             if [ -f app/build.gradle ] && ! grep -q "kotlin" app/build.gradle; then
-              echo "Adding kotlin plugin to app"
+              echo "Adding kotlin plugin to app/build.gradle"
               sed -i "/id 'com.android.application'/a\\    id 'org.jetbrains.kotlin.android'" app/build.gradle
             fi
 
-            # Add kotlin-stdlib dependency
             if [ -f app/build.gradle ] && ! grep -q "kotlin-stdlib" app/build.gradle; then
               echo "Adding kotlin-stdlib"
               sed -i "/dependencies {/a\\    implementation 'org.jetbrains.kotlin:kotlin-stdlib:${KOTLIN_VER}'" app/build.gradle
             fi
+          elif [ "$KT" -gt 0 ] && [ "$IS_KTS" = true ]; then
+            echo ""
+            echo ">>> KOTLIN SUPPORT: KTS project — no Groovy modifications needed <<<"
           fi
 
-          # Parse libraries.json (CodeAssist/Android IDE format)
+          # ── Parse libraries.json ──────────────────────────────────
           if [ -f app/libraries.json ] && [ -f app/build.gradle ]; then
             echo ""
             echo ">>> LIBRARIES.JSON <<<"
@@ -193,7 +194,7 @@ jobs:
           " || echo "libraries.json parse skipped"
           fi
 
-          # Parse repositories.json and add to settings.gradle if needed
+          # ── Parse repositories.json ───────────────────────────────
           if [ -f app/repositories.json ] && [ -f settings.gradle ]; then
             echo ""
             echo ">>> REPOSITORIES.JSON <<<"
@@ -224,8 +225,11 @@ jobs:
           echo "===== FINAL app/build.gradle ====="
           cat app/build.gradle 2>/dev/null || echo "(none)"
           echo ""
-          echo "===== FINAL settings.gradle ====="
-          cat settings.gradle 2>/dev/null || echo "(none)"
+          echo "===== FINAL build.gradle.kts ====="
+          cat build.gradle.kts 2>/dev/null || echo "(none)"
+          echo ""
+          echo "===== FINAL settings.gradle / settings.gradle.kts ====="
+          cat settings.gradle 2>/dev/null || cat settings.gradle.kts 2>/dev/null || echo "(none)"
           echo ""
           echo "===== FINAL gradle-wrapper.properties ====="
           cat gradle/wrapper/gradle-wrapper.properties 2>/dev/null || echo "(none)"
@@ -248,13 +252,13 @@ jobs:
           printf '\n84831b9409646a918e30573bab4c9c91346d8abd\n' > "$ANDROID_HOME/licenses/android-sdk-preview-license"
           yes 2>/dev/null | sdkmanager --licenses > /dev/null 2>&1 || true
           CS=""
-          [ -f app/build.gradle ] && CS=$(grep -oP 'compileSdk\s*\K[0-9]+' app/build.gradle || true)
-          [ -z "$CS" ] && [ -f app/build.gradle ] && CS=$(grep -oP 'compileSdkVersion\s*\K[0-9]+' app/build.gradle || true)
-          [ -z "$CS" ] && [ -f app/build.gradle.kts ] && CS=$(grep -oP 'compileSdk\s*=\s*\K[0-9]+' app/build.gradle.kts || true)
+          [ -f app/build.gradle ]     && CS=$(grep -oP 'compileSdk\s*\K[0-9]+'         app/build.gradle     || true)
+          [ -z "$CS" ] && [ -f app/build.gradle ]     && CS=$(grep -oP 'compileSdkVersion\s*\K[0-9]+' app/build.gradle     || true)
+          [ -z "$CS" ] && [ -f app/build.gradle.kts ] && CS=$(grep -oP 'compileSdk\s*=\s*\K[0-9]+'   app/build.gradle.kts || true)
           [ -z "$CS" ] && CS="35"
           echo "Installing SDK $CS"
           sdkmanager "platforms;android-${CS}" > /dev/null 2>&1 || true
-          sdkmanager "platform-tools" > /dev/null 2>&1 || true
+          sdkmanager "platform-tools"           > /dev/null 2>&1 || true
           LB=$(sdkmanager --list 2>/dev/null | grep -oP "build-tools;\S+" | tail -1 || true)
           [ -n "$LB" ] && sdkmanager "$LB" > /dev/null 2>&1 || true
 
@@ -263,34 +267,119 @@ jobs:
 
       - name: Setup Gradle Wrapper
         run: |
-          # Determine target gradle version
+          # ── Determine target Gradle version ───────────────────────
           GV=""
           if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
             GV=$(grep "distributionUrl" gradle/wrapper/gradle-wrapper.properties | grep -oP 'gradle-\K[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
           fi
-          [ -z "$GV" ] && GV="7.5.1"
+          [ -z "$GV" ] && GV="8.7"
+          echo "Target Gradle version: $GV"
 
-          if [ -f gradlew ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
-            chmod +x gradlew
-            echo "gradlew exists and ready"
+          # ── Validate existing wrapper JAR integrity ────────────────
+          # A corrupted JAR from a ZIP upload causes: ClassFormatError: Code segment has wrong length
+          # We check integrity BEFORE trusting the existing files.
+          JAR_VALID=false
+          if [ -f gradle/wrapper/gradle-wrapper.jar ]; then
+            JAR_SIZE=$(stat -c%s gradle/wrapper/gradle-wrapper.jar 2>/dev/null || echo 0)
+            echo "Wrapper JAR size: ${JAR_SIZE} bytes"
+
+            # A valid gradle-wrapper.jar is always > 50 KB
+            if [ "$JAR_SIZE" -gt 51200 ]; then
+              # Also verify it's a valid ZIP/JAR (JARs are ZIP files)
+              if unzip -t gradle/wrapper/gradle-wrapper.jar > /dev/null 2>&1; then
+                JAR_VALID=true
+                echo "Wrapper JAR: integrity OK"
+              else
+                echo "Wrapper JAR: ZIP structure corrupted — will regenerate"
+              fi
+            else
+              echo "Wrapper JAR: suspiciously small (${JAR_SIZE}B) — will regenerate"
+            fi
           else
-            echo "Creating Gradle wrapper (v$GV)..."
-            wget -q "https://services.gradle.org/distributions/gradle-${GV}-bin.zip" -O /tmp/g.zip || \
-            wget -q "https://services.gradle.org/distributions/gradle-7.5.1-bin.zip" -O /tmp/g.zip
-            unzip -q /tmp/g.zip -d /tmp/gi
-            /tmp/gi/gradle-*/bin/gradle wrapper --gradle-version="$GV" --no-daemon 2>&1 | tail -5 || true
-            chmod +x gradlew 2>/dev/null || true
-            rm -rf /tmp/g.zip /tmp/gi
+            echo "Wrapper JAR: missing — will create"
+          fi
 
-            if [ ! -f gradlew ]; then
-              echo "ERROR: Failed to create gradlew"
-              exit 1
+          # ── Use existing wrapper or regenerate ────────────────────
+          if [ -f gradlew ] && [ "$JAR_VALID" = true ]; then
+            chmod +x gradlew
+            echo "gradlew: using existing (JAR validated)"
+          else
+            echo "Creating/repairing Gradle wrapper (v$GV)..."
+
+            # Strategy 1: Download the official wrapper JAR directly
+            # (much faster than downloading the full Gradle distribution)
+            WRAPPER_VER="$GV"
+            # Map Gradle version to known wrapper JAR download
+            # Gradle publishes the wrapper jar at their GitHub releases
+            mkdir -p gradle/wrapper
+            wget -q --timeout=30 \
+              "https://github.com/gradle/gradle/raw/v${GV}/gradle/wrapper/gradle-wrapper.jar" \
+              -O gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
+
+            # Validate the downloaded JAR
+            if [ -f gradle/wrapper/gradle-wrapper.jar ] && \
+               [ "$(stat -c%s gradle/wrapper/gradle-wrapper.jar 2>/dev/null || echo 0)" -gt 51200 ] && \
+               unzip -t gradle/wrapper/gradle-wrapper.jar > /dev/null 2>&1; then
+              echo "Strategy 1 succeeded: wrapper JAR downloaded from GitHub"
+              JAR_VALID=true
+            else
+              echo "Strategy 1 failed — falling back to full Gradle distribution"
+              # Strategy 2: Download full Gradle and run 'gradle wrapper'
+              wget -q --timeout=120 \
+                "https://services.gradle.org/distributions/gradle-${GV}-bin.zip" \
+                -O /tmp/g.zip 2>/dev/null || \
+              wget -q --timeout=120 \
+                "https://services.gradle.org/distributions/gradle-8.7-bin.zip" \
+                -O /tmp/g.zip
+              unzip -q /tmp/g.zip -d /tmp/gi
+              /tmp/gi/gradle-*/bin/gradle wrapper \
+                --gradle-version="$GV" \
+                --no-daemon \
+                2>&1 | tail -10 || true
+              rm -rf /tmp/g.zip /tmp/gi
+            fi
+
+            # Make gradlew executable
+            chmod +x gradlew 2>/dev/null || true
+
+            # Ensure wrapper properties still points to the right version
+            if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
+              CURRENT_URL=$(grep "distributionUrl" gradle/wrapper/gradle-wrapper.properties || true)
+              echo "Wrapper properties: $CURRENT_URL"
             fi
           fi
-          echo "Wrapper check:"
-          [ -f gradlew ] && echo "  OK: gradlew" || echo "  MISSING: gradlew"
-          [ -f gradle/wrapper/gradle-wrapper.jar ] && echo "  OK: wrapper.jar" || echo "  MISSING: wrapper.jar"
-          [ -f gradle/wrapper/gradle-wrapper.properties ] && echo "  OK: wrapper.properties" || echo "  MISSING: wrapper.properties"
+
+          # ── Final sanity checks ────────────────────────────────────
+          echo ""
+          echo "Wrapper sanity check:"
+          if [ -f gradlew ]; then
+            echo "  OK: gradlew ($(stat -c%s gradlew)B)"
+          else
+            echo "  ERROR: gradlew missing!"
+            exit 1
+          fi
+          if [ -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "  OK: wrapper.jar ($(stat -c%s gradle/wrapper/gradle-wrapper.jar)B)"
+          else
+            echo "  ERROR: wrapper.jar missing!"
+            exit 1
+          fi
+          if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
+            echo "  OK: wrapper.properties"
+          else
+            echo "  ERROR: wrapper.properties missing!"
+            exit 1
+          fi
+
+          # ── Quick smoke test of the wrapper ───────────────────────
+          echo ""
+          echo "Running wrapper smoke test..."
+          if timeout 30 ./gradlew --version --no-daemon 2>&1 | grep -q "Gradle"; then
+            echo "  Wrapper smoke test: PASSED"
+          else
+            echo "  Wrapper smoke test: FAILED — check logs above"
+            exit 1
+          fi
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -298,19 +387,28 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/*.gradle.kts', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
           restore-keys: gradle-${{ runner.os }}-
 
       - name: Build Debug APK
         run: |
           echo "===== BUILDING DEBUG APK ====="
-          if ./gradlew assembleDebug --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"; then
+          if ./gradlew assembleDebug \
+              --no-daemon \
+              --stacktrace \
+              -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"; then
             echo "BUILD SUCCESSFUL"
           else
-            echo "First attempt failed, retrying..."
-            ./gradlew assembleDebug --no-daemon --stacktrace --no-build-cache --refresh-dependencies -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+            echo "First attempt failed — retrying with clean caches..."
+            ./gradlew assembleDebug \
+              --no-daemon \
+              --stacktrace \
+              --no-build-cache \
+              --refresh-dependencies \
+              -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
             echo "BUILD SUCCESSFUL (retry)"
           fi
+
           echo ""
           echo "APK files:"
           find . -name "*.apk" -not -path "*/intermediates/*" -type f | while read f; do
