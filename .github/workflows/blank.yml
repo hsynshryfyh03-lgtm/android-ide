@@ -1,0 +1,65 @@
+name: Generate High-Quality TTS (XTTSv2)
+
+# يتيح لك تشغيل هذا السكربت يدوياً من واجهة GitHub وإدخال النص المطلوب
+on:
+  workflow_dispatch:
+    inputs:
+      text_to_speak:
+        description: 'النص المراد تحويله إلى صوت (بالعربية)'
+        required: true
+        default: 'مرحباً، هذا اختبار لتوليد الصوت بواقعية ومشاعر باستخدام الذكاء الاصطناعي.'
+      language:
+        description: 'اللغة (ar للعربية)'
+        required: true
+        default: 'ar'
+
+jobs:
+  generate-audio:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsndfile1 ffmpeg
+
+      - name: Install PyTorch (CPU optimized) & TTS
+        run: |
+          # تثبيت نسخة CPU لتسريع التنزيل وتخفيف الحجم
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install TTS
+
+      - name: Generate Audio using XTTSv2
+        env:
+          # الموافقة التلقائية على شروط استخدام نموذج Coqui لتجنب توقف السكربت
+          COQUI_TOS_AGREED: 1
+        run: |
+          # XTTS يحتاج إلى ملف صوتي مرجعي (3 ثوانٍ) لاستنساخ نبرة الصوت والمشاعر.
+          # إذا لم تكن قد رفعت ملف باسم reference.wav في مستودعك، سيقوم هذا الأمر بتحميل ملف تجريبي.
+          if [ ! -f "reference.wav" ]; then
+            echo "لم يتم العثور على ملف reference.wav. جاري تحميل ملف تجريبي..."
+            wget -qO reference.wav https://github.com/coqui-ai/TTS/raw/main/tests/data/interactive_tts/rozen_48k.wav
+          fi
+
+          echo "جاري توليد الصوت... قد يستغرق هذا بضع دقائق على CPU."
+          
+          tts --model_name tts_models/multilingual/multi-dataset/xtts_v2 \
+              --text "${{ github.event.inputs.text_to_speak }}" \
+              --language_idx "${{ github.event.inputs.language }}" \
+              --speaker_wav reference.wav \
+              --out_path output_audio.wav
+
+      - name: Upload Audio Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Generated-Voice
+          path: output_audio.wav
+          retention-days: 5
